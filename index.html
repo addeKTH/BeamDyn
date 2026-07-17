@@ -111,6 +111,7 @@ footer{margin-top:22px;color:var(--mute);font-size:11px;text-align:center}
 
   <div class="bar">
     <button id="bRun" class="pri">Run</button>
+    <button id="bSave" disabled>Save</button>
     <button id="bClear">Clear</button>
     <button id="bReset">Reset</button>
     <button id="bRep" disabled>Report</button>
@@ -141,6 +142,7 @@ footer{margin-top:22px;color:var(--mute);font-size:11px;text-align:center}
 </div>
 
 <script src="beamdyn.js"></script>
+<script src="xlsx.js"></script>
 <script>
 'use strict';
 const B = window.BeamDyn;
@@ -425,7 +427,7 @@ function update(){
     msg('');
   }catch(e){ msg(e.message,false); mdl=null; }
   drawBeam(); drawModes();
-  $('bRep').disabled = runs.length===0;
+  $('bRep').disabled = $('bSave').disabled = runs.length===0;
   return !!mdl;
 }
 
@@ -443,9 +445,105 @@ async function doRun(){
     runs.push({v:out.v, dmax:out.dmax, amax:out.amax, label:lab, inp});
     drawEnv('d'); drawEnv('a');
     msg(`done in ${((performance.now()-t0)/1000).toFixed(1)} s`, true);
-    $('bRep').disabled = false;
+    $('bRep').disabled = $('bSave').disabled = false;
   }catch(e){ msg(e.message,false); }
   busy = false; $('bRun').disabled = false;
+}
+
+/* ---------- excel export ------------------------------------------------- */
+function runLabel(r,k){ return (k+1)+'. '+r.label; }
+const r3 = v => (v===null||v===undefined||!isFinite(v)) ? null : Math.round(v*1e3)/1e3;
+
+/**
+ * Native "Save as" dialog where the browser has the File System Access API
+ * (Chrome, Edge, Opera; needs https or localhost).  Elsewhere - Firefox,
+ * Safari, or a file:// page - fall back to a download, which respects the
+ * browser's own "always ask where to save" setting.
+ * Returns false only if the user cancelled.
+ */
+async function saveBlob(blob, name, desc, mime, ext){
+  if(window.showSaveFilePicker){
+    try{
+      const fh = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{description: desc, accept: {[mime]: [ext]}}]
+      });
+      const w = await fh.createWritable();
+      await w.write(blob);
+      await w.close();
+      return true;
+    }catch(e){
+      if(e.name === 'AbortError') return false;      // cancelled: do nothing
+      // any other failure (e.g. insecure context) drops through to the anchor
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  return true;
+}
+
+async function exportXlsx(){
+  if(!runs.length || !mdl){ msg('run first', false); return; }
+
+  // mode shapes of the CURRENT model, on a refined grid (matches the plot).
+  // Scaled to max|phi| = 1 as on screen, so these are NOT mass-normalised and
+  // cannot be used to reconstruct response amplitudes.
+  const xs=[];
+  for(let x=0;x<=mdl.Ltot+1e-9;x+=mdl.dL/4) xs.push(Math.min(x,mdl.Ltot));
+  const P = B.hermiteEvalMany(mdl.Phi, mdl.nm, mdl.ndof, mdl.dL, mdl.EL, xs);
+  const mHead=['x (m)'], mCols=[xs.map(r3)];
+  for(let n=0;n<mdl.nm;n++){
+    const c = Array.from({length:xs.length},(_,j)=>P[n*xs.length+j]);
+    let mx=0; c.forEach(v=>{ const a=Math.abs(v); if(a>mx) mx=a; });
+    mCols.push(c.map(v => r3(v/mx)));
+    mHead.push(`phi${n+1} (f = ${mdl.f[n].toFixed(2)} Hz)`);
+  }
+
+  // envelopes: union of all speeds, blanks where a run has no sample.
+  // HSLM writes one column per train A1..A10 plus the envelope over them;
+  // only the envelope columns are plotted.
+  const vs = Array.from(new Set([].concat(...runs.map(r=>Array.from(r.v))))).sort((a,b)=>a-b);
+  const maps = runs.map(r=>{ const m=new Map(); r.v.forEach((v,i)=>m.set(v,i)); return m; });
+  const build = which => {
+    const head=['v (km/h)'], cols=[vs.map(r3)], series=[];
+    const sc = which==='d' ? 1e3 : 1;                  // dmax is stored in m
+    runs.forEach((r,k)=>{
+      const pre = runs.length>1 ? (k+1)+'. ' : '';
+      const put = (label, get) => {
+        cols.push(vs.map(v => maps[k].has(v) ? r3(get(maps[k].get(v))) : null));
+        head.push(label);
+        return cols.length-1;
+      };
+      if(r.inp.load==='HSLM'){
+        const src = which==='d' ? r.dmax : r.amax;
+        src.forEach((row,t)=> put(pre+'HSLM-A'+(t+1), i => row[i]*sc));
+      }
+      const e = env(r,which);
+      const c = put(pre + (r.inp.load==='HSLM' ? 'HSLM envelope' : r.label), i => e[i]);
+      series.push(c);                                   // only this one is plotted
+    });
+    return {head, cols, series};
+  };
+  const D = build('d'), A = build('a');
+
+  const buf = XlsxOut.writeXlsx([
+    {name:'Mode shapes', headers:mHead, cols:mCols,
+     chart:{title:'Mode shapes', xlab:'x (m)', ylab:'Phi(x)'}},
+    {name:'Displacement', headers:D.head, cols:D.cols, series:D.series,
+     chart:{title:'Displacement envelope', xlab:'v (km/h)', ylab:'d_max (mm)'}},
+    {name:'Acceleration', headers:A.head, cols:A.cols, series:A.series,
+     chart:{title:'Acceleration envelope', xlab:'v (km/h)', ylab:'a_max (m/s2)'}}
+  ]);
+
+  const MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const name = 'BeamDyn2D_' + new Date().toISOString().slice(0,10) + '.xlsx';
+  try{
+    const done = await saveBlob(new Blob([buf],{type:MIME}), name, 'Excel workbook', MIME, '.xlsx');
+    msg(done ? 'saved' : '', !!done);
+  }catch(e){ msg(e.message, false); }
 }
 
 /* ---------- report ------------------------------------------------------- */
@@ -483,13 +581,14 @@ sel.addEventListener('change', update);
 
 $('bRun').addEventListener('click', doRun);
 $('bClear').addEventListener('click', ()=>{ runs=[]; picks=[]; drawEnv('d'); drawEnv('a');
-  msg(''); $('bRep').disabled=true; });
+  msg(''); $('bRep').disabled = $('bSave').disabled = true; });
 $('bReset').addEventListener('click', ()=>{
   $('iL').value=DEF.L; $('im').value=DEF.m; $('iEI').value=DEF.EI; $('ixi').value=DEF.xi;
   $('iNmod').value=DEF.Nmod; $('ifmax').value=DEF.fmax; $('idL').value=DEF.dL;
   sel.value=DEF.load; $('iNcar').value=DEF.Ncar; $('iv').value=DEF.v; $('iW').value=DEF.W;
   sup=[]; runs=[]; picks=[]; drawEnv('d'); drawEnv('a'); update(); msg('');
 });
+$('bSave').addEventListener('click', exportXlsx);
 $('bRep').addEventListener('click', ()=>{ buildReport(); window.print(); });
 
 update(); drawEnv('d'); drawEnv('a');

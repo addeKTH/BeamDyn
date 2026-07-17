@@ -12,6 +12,7 @@ no licence.
 |---|---|
 | `index.html` | the page: UI, SVG plots, print-to-PDF report |
 | `beamdyn.js` | numerics core — works in the browser *and* in Node |
+| `xlsx.js` | minimal .xlsx writer with scatter charts, no dependencies |
 | `test.js` | validation suite (Node) |
 
 ## Publish on GitHub Pages
@@ -32,6 +33,36 @@ Ten checks against analytical solutions: simply-supported, clamped–clamped
 and two-span continuous frequencies; mass normalisation; Nigam–Jennings
 against the exact ramp response; static and velocity gains; the
 consistent-load / direct-φ identity; the static deflection limit.
+
+## Excel export
+
+**Save** writes a workbook with three sheets — mode shapes, displacement
+envelope, acceleration envelope — each with a scatter chart (straight lines,
+no markers) beside its data.
+
+The envelopes carry one column per accumulated run, over the union of all
+speeds; a run with no sample at a given speed leaves a blank, which the chart
+draws as a gap.
+
+An HSLM run writes **eleven** columns: `HSLM-A1` … `HSLM-A10` with each train
+separately, then `HSLM envelope` — the maximum over the ten. Only the envelope
+is plotted; the per-train columns are there for inspection.
+
+Mode shapes are those of the *current* model, i.e. the ones on screen, scaled
+to max|φ| = 1. Note that this scaling means they are **not** mass-normalised
+and cannot be used to reconstruct response amplitudes — use `out.Phi` from
+`beamdyn.js` for that. All values are rounded to 3 decimals; frequencies in
+the column headers to 2.
+
+**Save as** uses the browser's native file dialog where it exists
+(Chrome/Edge/Opera, via the File System Access API — needs `https` or
+`localhost`, so GitHub Pages qualifies). Firefox and Safari have no such API:
+there it falls back to an ordinary download, which still shows a Save-as
+dialog if the browser is set to *always ask where to save files*.
+
+`xlsx.js` builds the file from scratch: a store-only ZIP plus hand-written
+SpreadsheetML and DrawingML. No library, and unlike the free build of SheetJS
+it can emit charts. Verified by reading the output back with openpyxl.
 
 ## Method
 
