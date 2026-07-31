@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Railway bridge dynamics</title>
+<style>
+/* The MATLAB figure is 540 x 680 px with pixel-positioned controls and axes.
+   Everything below is the same geometry, converted from MATLAB's bottom-left
+   origin to CSS top-left. */
+html, body { margin: 0; padding: 0; background: #e9e9e9;
+             font: 11px "Segoe UI", system-ui, sans-serif; color: #000; }
+#fig { position: relative; width: 540px; height: 680px; margin: 12px auto;
+       background: #f0f0f0; box-shadow: 0 1px 6px rgba(0,0,0,.22); }
+#panel { position: absolute; left: 10px; top: 2px; width: 520px; height: 192px; }
+.lbl  { position: absolute; width: 52px; height: 16px; line-height: 16px; font-size: 11px; }
+.hdr  { position: absolute; width: 120px; height: 16px; line-height: 16px;
+        font-size: 11px; font-weight: 600; }
+input.ed { position: absolute; width: 85px; height: 20px; box-sizing: border-box;
+           font: 11px "Segoe UI", system-ui, sans-serif; padding: 1px 3px;
+           border: 1px solid #a0a0a0; background: #fff; }
+select.ed { position: absolute; width: 85px; height: 20px; box-sizing: border-box;
+            font: 11px "Segoe UI", system-ui, sans-serif; border: 1px solid #a0a0a0;
+            background: #fff; }
+button.btn { position: absolute; width: 44px; height: 22px; font-size: 11px;
+             background: #f5f5f5; border: 1px solid #a6a6a6; border-radius: 2px;
+             cursor: pointer; padding: 0; }
+button.btn:hover:enabled { background: #e6f0fa; border-color: #4d8fd1; }
+button.btn:disabled { color: #a0a0a0; cursor: default; }
+#msg { position: absolute; left: 62px; top: 127px; width: 460px; height: 16px;
+       line-height: 16px; color: #b30000; font-size: 11px; white-space: nowrap;
+       overflow: hidden; }
+.chk { position: absolute; height: 18px; font-size: 11px; display: flex;
+       align-items: center; gap: 3px; user-select: none; }
+.chk input { margin: 0; }
+canvas.plot { position: absolute; left: 0; width: 540px; }
+#cvBeam  { top: 195px; height: 56px; cursor: pointer; }
+#cvModes { top: 255px; height: 125px; }
+#cvA     { top: 380px; height: 112px; }
+#cvB     { top: 496px; height: 140px; }
+#qrow { position: absolute; left: 0; top: 638px; width: 540px; height: 18px; }
+#qrow .qlab { position: absolute; left: 10px; width: 34px; text-align: right;
+              line-height: 18px; }
+#hint { position: absolute; left: 300px; top: 246px; width: 230px; text-align: right;
+        font-size: 9px; color: #808080; pointer-events: none; }
+#supmenu { position: absolute; width: 74px; height: 20px; font-size: 11px;
+           display: none; z-index: 10; }
+/* ---- printed report ---------------------------------------------------- */
+#report { display: none; }
+@media print {
+  body > *:not(#report) { display: none !important; }
+  #report { display: block; }
+  @page { size: A4; margin: 20mm 25mm; }
+}
+#report h1 { font-size: 15pt; margin: 0 0 2mm 0; }
+#report h2 { font-size: 11pt; margin: 5mm 0 1.5mm 0; }
+#report .date { font-size: 8pt; color: #444; margin-bottom: 4mm; }
+#report table { border-collapse: collapse; width: 100%; font-size: 8pt; margin-bottom: 2mm; }
+#report th { text-align: left; border-top: 1px solid #000; border-bottom: 0.5px solid #000;
+             padding: 1mm 1mm; font-weight: 600; }
+#report td { padding: 0.6mm 1mm; border: none; }
+#report tr:last-child td { border-bottom: 1px solid #000; }
+#report .cols { display: flex; gap: 6mm; }
+#report .cols > div { flex: 1; }
+#report img { width: 100%; display: block; margin: 1mm 0; }
+#report .pg { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<div id="fig">
+  <div id="panel"></div>
+
+  <canvas id="cvBeam"  class="plot"></canvas>
+  <canvas id="cvModes" class="plot"></canvas>
+  <canvas id="cvA"     class="plot"></canvas>
+  <canvas id="cvB"     class="plot"></canvas>
+
+  <div id="qrow"><span class="qlab">plot:</span></div>
+  <select id="supmenu"><option>pinned</option><option>clamped</option></select>
+</div>
+
+<div id="report"></div>
+
+<script src="linalg.js"></script>
+<script src="beammodel.js"></script>
+<script src="trainloads.js"></script>
+<script src="beamdyn2d.js"></script>
+<script src="beamstat2d.js"></script>
+<script src="dynamicfactor.js"></script>
+<script src="plot.js"></script>
+<script src="xlsx.js"></script>
+<script>
+'use strict';
+/* ===========================================================================
+   Railway bridge dynamics - interactive GUI
+   Web port of Main_gui.m.  Same layout, same workflow: the model, the
+   eigenvalue analysis, the beam sketch and the mode shapes update on every
+   input change; Run starts the dynamic analysis; envelopes accumulate over
+   successive runs until Clear.
+   ===========================================================================*/
+
+// ---------------------------------------------------------------- defaults
+const DEF = {
+    L: '20 20', m: '15E3', EI: '30E9', xi: '1.5',
+    Nmod: '3', fmax: '30', dL: '1',
+    load: 'D2', cars: '20', v: '100:1:200', W: '0'
+};
+const CATS = TL.CATEGORIES;                       // A1 ... E5
+const LOADS = TL.LOAD_LIST;                       // HSLM-A first
+
+// ------------------------------------------------------------------- state
+let inp = {}, mdl = null;
+let sup = [];                                     // false = pinned, true = clamped
+let runs = [];                                    // accumulated runs
+let envData = null;                               // last HSLM-A vs A1-E5 envelope
+let busy = false;
+const H = {};                                     // control handles
+
+// =========================================================== worker pool ===
+// This is what replaces parfor.  The button toggles between one worker and all
+// cores; there is always at least one, so the interface never blocks.
+// If workers cannot be created - opening the page straight off the disk in
+// Chrome, for instance - every job runs on the main thread instead.  Same
+// numbers, no parallelism, and the interface freezes while a run is going.
+const LOCAL = { key: null, model: null, IL: null };
+function localJob(job) {
+    const ip = job.inp;
+    const key = JSON.stringify([ip.L, ip.m, ip.EI, ip.dL, ip.bc, ip.Nmod, ip.fmax, ip.fs, ip.t_fr, ip.xi, ip.W, ip.secForces]);
+    if (key !== LOCAL.key) { LOCAL.key = key; LOCAL.model = null; LOCAL.IL = null; }
+    if (!LOCAL.model) LOCAL.model = BD.buildModel(ip);
+    if (job.kind === 'dyn') {
+        const tr = { x: Float64Array.from(job.train.x), P: Float64Array.from(job.train.P) };
+        return { id: job.id, kind: 'dyn', ok: true, res: BD.runTrain(LOCAL.model, ip, tr, job.vList, job.vAll) };
+    }
+    if (!LOCAL.IL) LOCAL.IL = BS.influence(ip);
+    return {
+        id: job.id, kind: 'stat', ok: true,
+        res: job.trains.map(t => BS.runTrain(LOCAL.IL, ip, { x: Float64Array.from(t.x), P: Float64Array.from(t.P) }))
+    };
+}
+
+const POOL = {
+    ws: [], idle: [], queue: [], pending: new Map(), nextId: 1, want: 1, fallback: false,
+    max: Math.max(1, Math.min(16, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4)),
+    size(n) {
+        this.want = n;
+        if (this.fallback) return;
+        try {
+            while (this.ws.length < n) {
+                const w = new Worker('solver.worker.js');
+                w.onmessage = (e) => this.done(w, e.data);
+                w.onerror = (e) => this.fail(w, e.message || 'worker error');
+                this.ws.push(w); this.idle.push(w);
+            }
+        } catch (e) {
+            this.fallback = true; this.want = 1; this.ws = []; this.idle = [];
+            return;
+        }
+        while (this.ws.length > n) {
+            const w = this.ws.pop();
+            const i = this.idle.indexOf(w); if (i >= 0) this.idle.splice(i, 1);
+            w.terminate();
+        }
+        this.pump();
+    },
+    run(job) {
+        job.id = this.nextId++;
+        if (this.fallback || !this.ws.length) {
+            return new Promise((res, rej) => setTimeout(() => {
+                try { res(localJob(job)); } catch (e) { rej(e); }
+            }, 0));
+        }
+        return new Promise((res, rej) => {
+            this.pending.set(job.id, { res, rej });
+            this.queue.push(job); this.pump();
+        });
+    },
+    pump() {
+        while (this.idle.length && this.queue.length) {
+            const w = this.idle.pop(), j = this.queue.shift();
+            w._id = j.id; w.postMessage(j);
+        }
+    },
+    done(w, msg) {
+        const p = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        this.idle.push(w); this.pump();
+        if (!p) return;
+        if (msg.ok) p.res(msg); else p.rej(new Error(msg.message));
+    },
+    fail(w, message) {
+        const p = this.pending.get(w._id);
+        if (p) { this.pending.delete(w._id); p.rej(new Error(message)); }
+        this.idle.push(w); this.pump();
+    }
+};
+
+// ================================================================== GUI ====
+function el(tag, cls, css, parent) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (css) Object.assign(e.style, css);
+    (parent || document.getElementById('panel')).appendChild(e);
+    return e;
+}
+
+function addHeader(x, y, s) {
+    const e = el('div', 'hdr', { left: (x + 54) + 'px', top: y + 'px' });
+    e.textContent = s;
+}
+
+function addEdit(x, y, lbl, val, tip) {
+    const l = el('div', 'lbl', { left: x + 'px', top: y + 'px' });
+    l.innerHTML = lbl; l.title = tip || '';
+    const e = el('input', 'ed', { left: (x + 54) + 'px', top: y + 'px' });
+    e.type = 'text'; e.value = val; e.title = tip || '';
+    e.addEventListener('change', onInput);
+    e.addEventListener('keydown', ev => { if (ev.key === 'Enter') onInput(); });
+    return e;
+}
+
+function addChk(x, y, label, tip, on, cb) {
+    const d = el('div', 'chk', { left: x + 'px', top: y + 'px' });
+    const i = document.createElement('input'); i.type = 'checkbox'; i.checked = !!on;
+    const s = document.createElement('span'); s.textContent = label;
+    d.appendChild(i); d.appendChild(s); d.title = tip || '';
+    i.addEventListener('change', cb);
+    return i;
+}
+
+function addBtn(x, y, label, tip, cb, w) {
+    const b = el('button', 'btn', { left: x + 'px', top: y + 'px' });
+    if (w) b.style.width = w + 'px';
+    b.textContent = label; b.title = tip || '';
+    b.addEventListener('click', cb);
+    return b;
+}
+
+function buildGUI() {
+    const col = [8, 155, 302];
+    const rowY = [33, 57, 81, 105];
+    const hdrY = 13, btnY = 145, chkY = 171;
+
+    addHeader(col[0], hdrY, 'Bridge properties');
+    H.L  = addEdit(col[0], rowY[0], 'L (m)',      DEF.L,  'Span lengths');
+    H.m  = addEdit(col[0], rowY[1], 'm (kg/m)',   DEF.m,  'Total mass per meter');
+    H.EI = addEdit(col[0], rowY[2], 'EI (Nm<sup>2</sup>)', DEF.EI, 'Flexural rigidity');
+    H.xi = addEdit(col[0], rowY[3], '&zeta; (%)', DEF.xi, 'Modal damping');
+
+    addHeader(col[1], hdrY, 'Analysis');
+    H.Nmod = addEdit(col[1], rowY[0], 'Nmod',      DEF.Nmod, 'Number of modes');
+    H.fmax = addEdit(col[1], rowY[1], 'fmax (Hz)', DEF.fmax, 'Max frequency');
+    H.dL   = addEdit(col[1], rowY[2], 'dL (m)',    DEF.dL,   'Element length');
+
+    addHeader(col[2], hdrY, 'Train');
+    const ll = el('div', 'lbl', { left: col[2] + 'px', top: rowY[0] + 'px' });
+    ll.textContent = 'load';
+    H.load = el('select', 'ed', { left: (col[2] + 54) + 'px', top: rowY[0] + 'px' });
+    H.load.title = 'Train load model';
+    for (const n of LOADS) { const o = document.createElement('option'); o.textContent = n; H.load.appendChild(o); }
+    H.load.value = DEF.load;
+    H.load.addEventListener('change', onInput);
+    H.cars = addEdit(col[2], rowY[1], 'cars',     DEF.cars, 'number of cars in train set');
+    H.v    = addEdit(col[2], rowY[2], 'v (km/h)', DEF.v,    'Train speed range');
+    H.W    = addEdit(col[2], rowY[3], 'W (m)',    DEF.W,    'Width of triangular load distribution');
+
+    const bx = col[0] + 54, bw = 44, bg = 3;
+    H.par  = addBtn(bx,               btnY, 'par 1', 'use one worker or every core', onPar);
+    H.run  = addBtn(bx + (bw + bg),   btnY, 'Run',   'Run train analysis', onRun);
+    H.save = addBtn(bx + 2*(bw + bg), btnY, 'Save',  'Save results to xlsx', onSave);
+    H.clr  = addBtn(bx + 3*(bw + bg), btnY, 'Clear', 'Clear current results', onClear);
+    H.rst  = addBtn(bx + 4*(bw + bg), btnY, 'Reset', 'Reset to default input', onReset);
+    H.rep  = addBtn(bx + 5*(bw + bg), btnY, 'Report','Print a pdf report', onReport);
+    H.save.disabled = true; H.rep.disabled = true;
+
+    H.sec  = addChk(bx,       chkY, 'Section-forces', 'compute bending moment, shear and phi\'', false, () => {});
+    H.cum  = addChk(bx + 112, chkY, 'Cumulative', 'running peak over speed', false, redrawResults);
+    H.env  = addChk(bx + 194, chkY, 'Envelope', 'on Run: envelope HSLM-A vs all A1-E5', false, onEnvelope);
+    H.sepA = addChk(bx + 272, chkY, 'Separate A1-A10', 'plot HSLM-A1..A10 separately', false, onSepA);
+
+    // quantity tick boxes below the lower plot
+    const qn = ['dmax', 'Mmax', 'Mmin', 'Vmax'];
+    H.q = [];
+    const qrow = document.getElementById('qrow');
+    for (let i = 0; i < 4; i++) {
+        const d = el('div', 'chk', { left: (48 + i * 58) + 'px', top: '0px' }, qrow);
+        const c = document.createElement('input'); c.type = 'checkbox'; c.checked = (i === 0);
+        const s = document.createElement('span'); s.textContent = qn[i];
+        d.appendChild(c); d.appendChild(s);
+        c.addEventListener('change', redrawResults);
+        H.q.push(c);
+    }
+    const dp = el('div', 'chk', { left: '300px', top: '0px' }, qrow);
+    H.phi = document.createElement('input'); H.phi.type = 'checkbox';
+    const sp = document.createElement('span'); sp.innerHTML = '&phi;&prime;';
+    dp.appendChild(H.phi); dp.appendChild(sp);
+    dp.title = "plot phi' of the ticked quantities";
+    H.phi.addEventListener('change', redrawResults);
+
+    const hint = document.createElement('div');
+    hint.id = 'hint'; hint.textContent = 'click a support to change b.c.';
+    document.getElementById('fig').appendChild(hint);
+
+    H.msg = document.createElement('div'); H.msg.id = 'msg';
+    document.getElementById('panel').appendChild(H.msg);
+
+    // axes: box rectangles inside each canvas, matching the MATLAB positions
+    H.axBeam = { cv: document.getElementById('cvBeam'), box: { x: 55, y: 4, w: 410, h: 46 } };
+    H.axM = new Plot.Axes(document.getElementById('cvModes'), { x: 55, y: 9, w: 410, h: 84 });
+    H.axA = new Plot.Axes(document.getElementById('cvA'), { x: 55, y: 8, w: 410, h: 100 });
+    H.axB = new Plot.Axes(document.getElementById('cvB'), { x: 55, y: 12, w: 410, h: 100 });
+    H.axM.xlabel = 'x (m)'; H.axM.ylabel = '\u03A6(x)';
+    H.axA.ylabel = 'a_{max} (m/s^2)'; H.axA.showXTickLabels = false;
+    H.axB.xlabel = 'v (km/h)';
+
+    document.getElementById('cvBeam').addEventListener('click', onBeamClick);
+    attachPick(H.axA); attachPick(H.axB);
+    POOL.size(1);
+    if (POOL.fallback) {
+        H.par.textContent = 'no par';
+        H.par.disabled = true;
+        H.par.title = 'workers are unavailable - serve the page over http to enable them';
+    }
+}
+
+function setMsg(s, col) {
+    H.msg.textContent = s;
+    H.msg.style.color = col || '#b30000';
+}
+
+// ============================================================ input =======
+// MATLAB's str2num accepts "20 20" and "100:1:200"; this does the same for the
+// forms the panel actually uses.
+function parseVec(s) {
+    if (s === undefined || s === null) return [];
+    const out = [];
+    for (const tok of String(s).trim().split(/[\s,;]+/).filter(Boolean)) {
+        if (tok.indexOf(':') >= 0) {
+            const p = tok.split(':').map(Number);
+            if (p.some(v => !isFinite(v))) return null;
+            const a = p[0], step = p.length === 3 ? p[1] : 1, b = p[p.length - 1];
+            if (step === 0) return null;
+            const n = Math.floor((b - a) / step + 1e-9);
+            for (let k = 0; k <= n; k++) out.push(a + k * step);
+        } else {
+            const v = Number(tok);
+            if (!isFinite(v)) return null;
+            out.push(v);
+        }
+    }
+    return out;
+}
+const parseNum = s => { const v = parseVec(s); return (v && v.length === 1) ? v[0] : NaN; };
+
+function readInput() {
+    const L = parseVec(H.L.value);
+    const o = {
+        L: L, m: parseNum(H.m.value), EI: parseNum(H.EI.value), xi: parseNum(H.xi.value),
+        Nmod: parseNum(H.Nmod.value), fmax: parseNum(H.fmax.value), dL: parseNum(H.dL.value),
+        load: H.load.value, N_car: parseNum(H.cars.value),
+        v: parseVec(H.v.value), W: parseNum(H.W.value)
+    };
+    H.cars.disabled = (o.load === 'HSLM-A');
+    const ok = L && L.length && L.every(v => v > 0)
+        && o.m > 0 && o.EI > 0 && o.xi >= 0 && o.xi < 100
+        && o.Nmod >= 1 && o.fmax > 0 && o.dL > 0
+        && o.v && o.v.length && o.v.every(v => v > 0)
+        && o.W >= 0 && o.N_car >= 1 && o.N_car % 1 === 0;
+    if (!ok) { setMsg('input error'); return false; }
+    inp = o;
+    return true;
+}
+
+// The input the solvers see: geometry plus the resolved sampling parameters.
+function solverInput() {
+    return {
+        L: inp.L, m: inp.m, EI: inp.EI, xi: inp.xi, dL: inp.dL,
+        bc: mdl.bc, Nmod: inp.Nmod, fmax: inp.fmax, W: inp.W,
+        fs: mdl.fs, t_fr: mdl.t_fr,
+        statCorr: true, secForces: H.sec.checked
+    };
+}
+
+function onInput() { updateModel(); }
+
+// ============================================================= model ======
+function updateModel() {
+    if (!readInput()) return false;
+    setMsg('');
+    try {
+        const dL = inp.dL;
+        const Ladj = inp.L.map(v => dL * Math.round(v / dL));
+        const xs = [0]; for (const l of Ladj) xs.push(xs[xs.length - 1] + l);
+        if (sup.length !== xs.length) sup = xs.map(() => false);
+        const bc = [];
+        xs.forEach((x, i) => { bc.push([x, 1]); if (sup[i]) bc.push([x, 2]); });
+
+        const m = BD.buildModel({
+            L: inp.L, m: inp.m, EI: inp.EI, dL: inp.dL, bc: bc,
+            Nmod: inp.Nmod, fmax: inp.fmax
+        });
+        mdl = { model: m, L: Ladj, xs: xs, bc: bc, f: m.f, fs: m.fs, t_fr: m.t_fr };
+        inp.Nmod = m.f.length;
+    } catch (e) {
+        setMsg(e.message); return false;
+    }
+    plotBeam();
+    plotModes();
+    window.inp = inp; window.mdl = mdl;
+    return true;
+}
+
+function plotBeam() {
+    H.axBeam.info = Plot.beam(H.axBeam.cv, H.axBeam.box, mdl.L, mdl.bc);
+}
+
+function plotModes() {
+    const ax = H.axM, m = mdl.model;
+    ax.clear();
+    const Ltot = mdl.L.reduce((a, b) => a + b, 0);
+    const x = Array.from({ length: 201 }, (_, i) => i * Ltot / 200);
+    for (let n = 0; n < mdl.f.length; n++) {
+        const y = BD.modeShape(m, n, Float64Array.from(x));
+        let a = 0; for (const v of y) a = Math.max(a, Math.abs(v));
+        ax.add(x, Array.from(y, v => v / a), {
+            color: Plot.color(n), name: 'f_' + (n + 1) + ' = ' + mdl.f[n].toFixed(1) + ' Hz'
+        });
+    }
+    ax.xlim = [-0.02 * Ltot, 1.02 * Ltot];
+    ax.ylim = [-1.1, 1.1];
+    ax.legendLoc = 'topleft';
+    ax.draw();
+}
+
+// --------------------------------------------------- supports, click to edit
+function onBeamClick(ev) {
+    if (busy) return;
+    const r = H.axBeam.cv.getBoundingClientRect();
+    const mx = ev.clientX - r.left;
+    const info = H.axBeam.info;
+    let bi = -1, bd = 1e9;
+    info.supPix.forEach((p, i) => { const d = Math.abs(p - mx); if (d < bd) { bd = d; bi = i; } });
+    if (bd > 14) return;
+    const idx = mdl.xs.indexOf(info.pos[bi]);
+    if (idx < 0) return;
+    const men = document.getElementById('supmenu');
+    men.style.display = 'block';
+    men.style.left = (info.supPix[bi] - 37) + 'px';
+    men.style.top = (H.axBeam.cv.offsetTop + H.axBeam.box.y + 26) + 'px';
+    men.selectedIndex = sup[idx] ? 1 : 0;
+    men.onchange = () => {
+        sup[idx] = (men.selectedIndex === 1);
+        men.style.display = 'none';
+        updateModel();
+    };
+    men.onblur = () => { men.style.display = 'none'; };
+    men.focus();
+}
+
+// =============================================================== run ======
+function splitSpeeds(v, n) {
+    const parts = [], per = Math.ceil(v.length / n);
+    for (let i = 0; i < v.length; i += per) parts.push({ i0: i, v: v.slice(i, i + per) });
+    return parts;
+}
+
+const emptyRows = (nT, nv) => Array.from({ length: nT }, () => new Float64Array(nv));
+
+// One load model through both solvers, exactly as runCase() in the m-file:
+// BeamStat2D gives the moving-train quasi-static peak, BeamDyn2D the dynamic
+// peak, and dynamicFactor forms phi' = y_dyn/y_stat - 1 per quantity.
+async function runCase(loadName, tick) {
+    const trains = TL.buildTrains(loadName, inp.N_car);
+    const ip = solverInput();
+    const nT = trains.length, nv = inp.v.length;
+    const plain = trains.map(t => ({ x: Array.from(t.x), P: Array.from(t.P) }));
+
+    const dyn = {};
+    for (const k of ['dmax', 'amax', 'rmax', 'Mmax', 'Mmin', 'Vmax', 'RFmax', 'RFmin', 'RMmax'])
+        dyn[k] = emptyRows(nT, nv);
+
+    const nChunk = Math.max(1, Math.min(nv, Math.ceil(POOL.want / nT)));
+    const jobs = [];
+    for (let k = 0; k < nT; k++)
+        for (const pt of splitSpeeds(inp.v, nChunk))
+            jobs.push({ kind: 'dyn', inp: ip, train: plain[k], vList: pt.v, vAll: inp.v, t: k, i0: pt.i0 });
+    jobs.push({ kind: 'stat', inp: ip, trains: plain });
+
+    let stat = null;
+    await Promise.all(jobs.map(j => POOL.run(j).then(msg => {
+        if (msg.kind === 'stat') { stat = msg.res; }
+        else {
+            for (const k in dyn) {
+                const src = msg.res[k];
+                if (src) dyn[k][j.t].set(src, j.i0);
+            }
+        }
+        if (tick) tick();
+    })));
+
+    const statCols = {};
+    for (const k of ['dmax', 'rmax', 'Mmax', 'Mmin', 'Vmax', 'RFmax', 'RFmin', 'RMmax'])
+        statCols[k] = stat.map(s => s[k]);
+    const phi = dynamicFactor(statCols, dyn);
+    if (!ip.secForces)
+        for (const k of ['Mmax', 'Mmin', 'Vmax', 'RFmax', 'RFmin', 'RMmax']) { dyn[k] = []; phi[k] = []; }
+    return { dyn, stat: statCols, phi, trains };
+}
+
+async function onRun() {
+    if (busy) return;
+    if (!updateModel()) return;
+    if (H.env.checked) return runEnvelope();
+    busy = true;
+    H.run.disabled = true; H.save.disabled = true; H.rep.disabled = true;
+    const t0 = performance.now();
+    try {
+        const nT = (inp.load === 'HSLM-A') ? 10 : 1;
+        let done = 0;
+        const total = nT * Math.max(1, Math.min(inp.v.length, Math.ceil(POOL.want / nT))) + 1;
+        setMsg(inp.load + '  0 %');
+        const r = await runCase(inp.load, () => {
+            done++; setMsg(inp.load + '  ' + Math.round(100 * done / total) + ' %');
+        });
+        if (envData) { runs = []; envData = null; }
+        runs.push({
+            load: inp.load, v: inp.v.slice(), sec: H.sec.checked,
+            d: r.dyn.dmax, a: r.dyn.amax, M: r.dyn.Mmax, Mn: r.dyn.Mmin, V: r.dyn.Vmax,
+            pd: r.phi.dmax, pM: r.phi.Mmax, pMn: r.phi.Mmin, pV: r.phi.Vmax,
+            stat: r.stat
+        });
+        rebuildOut();
+        redrawResults();
+        setMsg('done in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' sec', '#006400');
+        H.save.disabled = false; H.rep.disabled = false;
+    } catch (e) {
+        setMsg('error: ' + e.message);
+    }
+    busy = false; H.run.disabled = false;
+}
+
+// HSLM-A against all A1-E5 line categories, built on Run when Envelope is on
+async function runEnvelope() {
+    busy = true;
+    H.run.disabled = true; H.save.disabled = true; H.rep.disabled = true;
+    const t0 = performance.now();
+    try {
+        const nv = inp.v.length;
+        const E = { v: inp.v.slice(), sec: H.sec.checked, cat: [] };
+        let step = 0;
+        const nStep = 1 + CATS.length;
+        const label = (nm) => setMsg('envelope: ' + nm + '  (' + (step) + '/' + nStep + ')');
+
+        step = 1; label('HSLM-A');
+        const h = await runCase('HSLM-A');
+        E.hdyn = h.dyn; E.hphi = h.phi; E.hstat = h.stat;
+        E.hd = maxrow(h.dyn.dmax); E.ha = maxrow(h.dyn.amax);
+        E.hM = maxrow(h.dyn.Mmax); E.hMn = minrow(h.dyn.Mmin); E.hV = maxrow(h.dyn.Vmax);
+        E.hpd = maxrow(h.phi.dmax); E.hpM = maxrow(h.phi.Mmax);
+        E.hpMn = maxrow(h.phi.Mmin); E.hpV = maxrow(h.phi.Vmax);
+
+        E.od = fill(nv, -Infinity); E.oa = fill(nv, -Infinity);
+        E.oM = fill(nv, -Infinity); E.oMn = fill(nv, Infinity); E.oV = fill(nv, -Infinity);
+        E.opd = fill(nv, -Infinity); E.opM = fill(nv, -Infinity);
+        E.opMn = fill(nv, -Infinity); E.opV = fill(nv, -Infinity);
+
+        for (const nm of CATS) {
+            step++; label(nm);
+            const c = await runCase(nm);
+            const rec = {
+                name: nm, d: maxrow(c.dyn.dmax), a: maxrow(c.dyn.amax),
+                M: maxrow(c.dyn.Mmax), Mn: minrow(c.dyn.Mmin), V: maxrow(c.dyn.Vmax),
+                pd: maxrow(c.phi.dmax), pM: maxrow(c.phi.Mmax),
+                pMn: maxrow(c.phi.Mmin), pV: maxrow(c.phi.Vmax)
+            };
+            E.od = combine(E.od, rec.d, Math.max); E.oa = combine(E.oa, rec.a, Math.max);
+            if (E.sec) {
+                E.oM = combine(E.oM, rec.M, Math.max);
+                E.oMn = combine(E.oMn, rec.Mn, Math.min);
+                E.oV = combine(E.oV, rec.V, Math.max);
+                E.opd = combine(E.opd, rec.pd, Math.max);
+                E.opM = combine(E.opM, rec.pM, Math.max);
+                E.opMn = combine(E.opMn, rec.pMn, Math.max);
+                E.opV = combine(E.opV, rec.pV, Math.max);
+            }
+            E.cat.push(rec);
+        }
+        if (!E.sec) for (const z of ['hM','hMn','hV','hpM','hpMn','hpV','oM','oMn','oV','opM','opMn','opV']) E[z] = null;
+        envData = E; runs = [];
+        rebuildOut();
+        redrawResults();
+        setMsg('done in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' sec', '#006400');
+        H.save.disabled = false; H.rep.disabled = false;
+    } catch (e) {
+        setMsg('error: ' + e.message);
+    }
+    busy = false; H.run.disabled = false;
+}
+
+const fill = (n, v) => Float64Array.from({ length: n }, () => v);
+function maxrow(A) {
+    if (!A || !A.length) return null;
+    const n = A[0].length, y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { let m = -Infinity; for (const r of A) if (r[i] > m) m = r[i]; y[i] = m; }
+    return y;
+}
+function minrow(A) {
+    if (!A || !A.length) return null;
+    const n = A[0].length, y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { let m = Infinity; for (const r of A) if (r[i] < m) m = r[i]; y[i] = m; }
+    return y;
+}
+function combine(a, b, f) {
+    if (!b) return a;
+    const y = new Float64Array(a.length);
+    for (let i = 0; i < a.length; i++) y[i] = f(a[i], b[i]);
+    return y;
+}
+
+// ============================================================= plotting ===
+const QRAW = ['d', 'M', 'Mn', 'V'], QPHI = ['pd', 'pM', 'pMn', 'pV'];
+const QLAB = ['d_{max}', 'M_{max}', 'M_{min}', 'V_{max}'];
+const QSC = [1e3, 1e-3, 1e-3, 1e-3];
+const QUN = ['mm', 'kNm', 'kNm', 'kN'];
+const ISMIN = [false, false, true, false];
+
+function applyCum(y, on) {
+    if (!on || !y) return y;
+    const z = Float64Array.from(y);
+    for (let i = 1; i < z.length; i++) if (z[i] < z[i - 1]) z[i] = z[i - 1];
+    return z;
+}
+
+function redrawResults() {
+    const axA = H.axA, axB = H.axB;
+    axA.clear(); axB.clear();
+    const cumOn = H.cum.checked, envOn = H.env.checked, sepOn = H.sepA.checked;
+    const phiOn = H.phi.checked;
+    const sel = H.q.map((c, i) => c.checked ? i : -1).filter(i => i >= 0);
+    const left = sel.filter(q => q === 0), right = sel.filter(q => q !== 0);
+    const useR = !phiOn && left.length > 0 && right.length > 0;
+    let vlim = null;
+
+    const addB = (v, y, q, style, color, name) => {
+        if (!y) return;
+        const k = phiOn ? 1 : QSC[q];
+        axB.add(v, Array.from(applyCum(y, cumOn), t => t * k), {
+            color, dash: style === '--' ? [4, 3] : null, name,
+            right: useR && q !== 0
+        });
+    };
+
+    if (envOn && envData) {
+        const E = envData, v = E.v;
+        vlim = [Math.min(...v), Math.max(...v)];
+        if (sepOn && E.hdyn && E.hdyn.amax.length > 1) {
+            E.hdyn.amax.forEach((row, t) =>
+                axA.add(v, Array.from(applyCum(row, cumOn)), { color: Plot.color(t), name: 'HSLM-A' + (t + 1) }));
+        } else {
+            axA.add(v, Array.from(applyCum(E.ha, cumOn)), { color: Plot.color(0), name: 'HSLM-A' });
+        }
+        if (sepOn) {
+            E.cat.forEach((c, k) => axA.add(v, Array.from(applyCum(c.a, cumOn)),
+                { color: Plot.color(k), dash: [4, 3], name: c.name }));
+        } else {
+            axA.add(v, Array.from(applyCum(E.oa, cumOn)), { color: Plot.color(1), dash: [4, 3], name: 'A1-E5' });
+        }
+        for (const q of sel) {
+            const fl = phiOn ? QPHI[q] : QRAW[q];
+            const col = Plot.color(q);
+            const Ytr = sepTrainRows(q, phiOn);
+            if (sepOn && Ytr) Ytr.forEach((row, t) => addB(v, row, q, '-', Plot.color(t), QLAB[q] + ' HSLM-A' + (t + 1)));
+            else addB(v, E['h' + fl], q, '-', col, QLAB[q] + ' HSLM-A');
+            if (sepOn) E.cat.forEach((c, k) => addB(v, c[fl], q, '--', Plot.color(k), QLAB[q] + ' ' + c.name));
+            else addB(v, E['o' + fl], q, '--', col, QLAB[q] + ' A1-E5');
+        }
+    } else {
+        for (const rr of runs) {
+            const v = rr.v;
+            vlim = vlim ? [Math.min(vlim[0], ...v), Math.max(vlim[1], ...v)] : [Math.min(...v), Math.max(...v)];
+            if (sepOn && rr.a.length > 1) {
+                rr.a.forEach((row, t) => axA.add(v, Array.from(applyCum(row, cumOn)),
+                    { color: Plot.color(t), name: rr.load + (t + 1) }));
+            } else {
+                axA.add(v, Array.from(applyCum(maxrow(rr.a), cumOn)), { name: rr.load });
+            }
+            for (const q of sel) {
+                const X = rr[phiOn ? QPHI[q] : QRAW[q]];
+                if (!X || !X.length) continue;
+                if (sepOn && X.length > 1) {
+                    X.forEach((row, t) => addB(v, row, q, '-', Plot.color(t), QLAB[q] + (t + 1)));
+                } else {
+                    const y = (ISMIN[q] && !phiOn) ? minrow(X) : maxrow(X);
+                    addB(v, y, q, '-', Plot.color(q), QLAB[q]);
+                }
+            }
+        }
+    }
+
+    // labels
+    if (phiOn) { axB.ylabel = '\u03C6\u2032 (-)'; axB.rlabel = ''; }
+    else if (useR) { axB.ylabel = 'd_{max} (mm)'; axB.rlabel = multiUnit(right); }
+    else if (sel.length) axB.ylabel = multiUnit(sel);
+    else axB.ylabel = '';
+
+    if (!vlim) { axA.draw(); axB.draw(); return; }
+    axA.xlim = vlim; axB.xlim = vlim;
+    let amax = 0;
+    for (const s of axA.series) for (const y of s.y) if (y > amax) amax = y;
+    axA.ylim = [0, Math.max(1.1 * amax, 1e-12)];
+    axB.autoY(0.1);
+    axA.draw(); axB.draw();
+}
+
+function multiUnit(qs) {
+    const sym = ['d', 'M', 'M', 'V'], seen = [];
+    for (const q of qs) {
+        const t = sym[q] + ' (' + QUN[q] + ')';
+        if (seen.indexOf(t) < 0) seen.push(t);
+    }
+    return seen.join(' / ');
+}
+
+// per-train HSLM-A rows for quantity q in envelope mode, or null
+function sepTrainRows(q, phiOn) {
+    if (!envData || !envData.hdyn) return null;
+    const f = ['dmax', 'Mmax', 'Mmin', 'Vmax'][q];
+    const src = phiOn ? envData.hphi : envData.hdyn;
+    const Y = src[f];
+    return (Y && Y.length > 1) ? Y : null;
+}
+
+// ---------------------------------------------------------------- datatips
+function attachPick(ax) {
+    const cv = ax.cv;
+    let drag = null;
+    const posOf = ev => {
+        const r = cv.getBoundingClientRect();
+        return [ev.clientX - r.left, ev.clientY - r.top];
+    };
+    cv.addEventListener('mousedown', ev => {
+        const [mx, my] = posOf(ev);
+        // grab an existing marker
+        for (let k = 0; k < ax.marks.length; k++) {
+            const m = ax.marks[k], s = ax.series[m.si];
+            if (!s) continue;
+            const dx = ax.px(s.x[m.i]) - mx, dy = ax.py(s.y[m.i], s.right) - my;
+            if (dx * dx + dy * dy < 100) {
+                if (ev.detail === 2) { ax.marks.splice(k, 1); ax.draw(); return; }
+                drag = m; return;
+            }
+        }
+        const hit = ax.hit(mx, my, 14);
+        if (!hit) return;
+        drag = { si: hit.si, i: hit.i, text: [] };
+        ax.marks.push(drag);
+        updateMark(ax, drag); ax.draw();
+    });
+    window.addEventListener('mousemove', ev => {
+        if (!drag) return;
+        const [mx] = posOf(ev);
+        const s = ax.series[drag.si];
+        let bi = 0, bd = Infinity;
+        for (let i = 0; i < s.x.length; i++) {
+            const d = Math.abs(ax.px(s.x[i]) - mx);
+            if (d < bd) { bd = d; bi = i; }
+        }
+        drag.i = bi; updateMark(ax, drag); ax.draw();
+    });
+    window.addEventListener('mouseup', () => { drag = null; });
+}
+
+function updateMark(ax, m) {
+    const s = ax.series[m.si];
+    const x = s.x[m.i], y = s.y[m.i];
+    if (ax === H.axA) m.text = [x.toFixed(0) + ' km/h', y.toFixed(2) + ' m/s^2'];
+    else if (H.phi.checked) m.text = [x.toFixed(0) + ' km/h', '\u03C6\u2032 = ' + y.toFixed(3)];
+    else m.text = [x.toFixed(0) + ' km/h', fmtG(y)];
+}
+const fmtG = v => (Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-3 && v !== 0)) ? v.toExponential(3) : v.toPrecision(4);
+
+// ============================================================== buttons ===
+function onPar() {
+    POOL.size(POOL.want === 1 ? POOL.max : 1);
+    H.par.textContent = 'par ' + POOL.want;
+}
+
+function onClear() {
+    runs = []; envData = null;
+    H.env.checked = false;
+    H.axA.clear(); H.axB.clear(); H.axA.draw(); H.axB.draw();
+    H.save.disabled = true; H.rep.disabled = true;
+    setMsg('');
+    rebuildOut();
+}
+
+function onReset() {
+    H.L.value = DEF.L; H.m.value = DEF.m; H.EI.value = DEF.EI; H.xi.value = DEF.xi;
+    H.Nmod.value = DEF.Nmod; H.fmax.value = DEF.fmax; H.dL.value = DEF.dL;
+    H.load.value = DEF.load; H.cars.value = DEF.cars; H.v.value = DEF.v; H.W.value = DEF.W;
+    sup = []; H.cum.checked = false; H.sepA.checked = false; H.sec.checked = false;
+    onClear(); updateModel();
+}
+
+function onEnvelope() {
+    if (H.env.checked && !envData) setMsg('press Run to compute the envelope');
+    redrawResults();
+}
+function onSepA() {
+    if (H.sepA.checked) setMsg('separate results for HSLM A1-A10 trains');
+    redrawResults();
+}
+
+// out, as the m-file wrote it to the base workspace: one entry per train type
+function rebuildOut() {
+    const out = { v: inp.v, f: mdl ? Array.from(mdl.f) : [], loads: [] };
+    if (envData) {
+        out.isEnv = true;
+        out.HSLM = { dmax: envData.hdyn.dmax, amax: envData.hdyn.amax, Mmax: envData.hdyn.Mmax,
+                     Mmin: envData.hdyn.Mmin, Vmax: envData.hdyn.Vmax, phi_prim: envData.hphi };
+        out.loads.push('HSLM');
+        for (const c of envData.cat) {
+            out[c.name] = { dmax: [c.d], amax: [c.a], Mmax: [c.M], Mmin: [c.Mn], Vmax: [c.V],
+                            phi_prim: { dmax: [c.pd], Mmax: [c.pM], Mmin: [c.pMn], Vmax: [c.pV] } };
+            out.loads.push(c.name);
+        }
+    } else {
+        for (const r of runs) {
+            const nm = r.load === 'HSLM-A' ? 'HSLM' : r.load;
+            out[nm] = { dmax: r.d, amax: r.a, Mmax: r.M, Mmin: r.Mn, Vmax: r.V,
+                        phi_prim: { dmax: r.pd, Mmax: r.pM, Mmin: r.pMn, Vmax: r.pV } };
+            out.loads.push(nm);
+        }
+    }
+    window.out = out;
+    return out;
+}
+
+// ================================================================ export ==
+function defaultName() {
+    if (envData) return 'Envelope';
+    if (runs.length) return runs[runs.length - 1].load;
+    return 'results';
+}
+
+// The result sets available for a peak table, tagged by family so the report
+// can show the line categories and the HSLM-A trains separately.
+function collectSets() {
+    const sets = [];
+    if (envData) {
+        sets.push({
+            tag: 'HSLM-A', kind: 'hslm',
+            d: envData.hdyn.dmax, a: envData.hdyn.amax, M: envData.hdyn.Mmax,
+            Mn: envData.hdyn.Mmin, V: envData.hdyn.Vmax,
+            pd: envData.hphi.dmax, pM: envData.hphi.Mmax,
+            pMn: envData.hphi.Mmin, pV: envData.hphi.Vmax
+        });
+        for (const c of envData.cat)
+            sets.push({
+                tag: c.name, kind: 'cat',
+                d: [c.d], a: [c.a], M: c.M ? [c.M] : [], Mn: c.Mn ? [c.Mn] : [],
+                V: c.V ? [c.V] : [], pd: [c.pd], pM: c.pM ? [c.pM] : [],
+                pMn: c.pMn ? [c.pMn] : [], pV: c.pV ? [c.pV] : []
+            });
+    } else {
+        for (const r of runs)
+            sets.push({
+                tag: r.load, kind: r.load === 'HSLM-A' ? 'hslm' : 'cat',
+                d: r.d, a: r.a, M: r.M, Mn: r.Mn, V: r.V,
+                pd: r.pd, pM: r.pM, pMn: r.pMn, pV: r.pV
+            });
+    }
+    return sets;
+}
+
+// Peak summary rows, shared by the workbook and the report.  kind filters the
+// train family: 'cat' for A1-E5, 'hslm' for HSLM-A1-A10, anything else for all.
+function peakRows(kind) {
+    const v = inp.v;
+    const spec = [
+        ['d_max (mm)', 'd', 1e3, false], ['a_max (m/s^2)', 'a', 1, false],
+        ['M_max (kNm)', 'M', 1e-3, false], ['M_min (kNm)', 'Mn', 1e-3, true],
+        ['V_max (kN)', 'V', 1e-3, false]
+    ];
+    const phiOf = { d: 'pd', M: 'pM', Mn: 'pMn', V: 'pV' };
+    const rows = [['Quantity', 'Peak', 'at v (km/h)', 'train', "peak phi'", 'at v (km/h)']];
+    const sets = collectSets().filter(S => !kind || kind === 'all' || S.kind === kind);
+    for (const [name, key, sc, useMin] of spec) {
+        let best = null;
+        for (const S of sets) {
+            const A = S[key]; if (!A || !A.length) continue;
+            A.forEach((row, t) => {
+                for (let i = 0; i < row.length; i++) {
+                    const val = row[i];
+                    if (!isFinite(val)) continue;
+                    if (!best || (useMin ? val < best.val : val > best.val))
+                        best = { val, i, tag: S.tag + (A.length > 1 ? (t + 1) : ''), set: S };
+                }
+            });
+        }
+        if (!best) continue;
+        let pc = '-', pv = '-';
+        const pk = phiOf[key];
+        if (pk && best.set[pk] && best.set[pk].length) {
+            let bp = null;
+            best.set[pk].forEach(row => {
+                if (!row) return;
+                for (let i = 0; i < row.length; i++)
+                    if (isFinite(row[i]) && (!bp || row[i] > bp.val)) bp = { val: row[i], i };
+            });
+            if (bp) { pc = Math.round(bp.val * 1000) / 1000; pv = v[bp.i]; }
+        }
+        rows.push([name, Math.round(best.val * sc * 100) / 100, v[best.i], best.tag, pc, pv]);
+    }
+    return rows;
+}
+
+function inputRows() {
+    return [
+        ['Quantity', 'Value', 'Unit'],
+        ['Span lengths L', mdl.L.join(' + '), 'm'],
+        ['Mass m', inp.m, 'kg/m'],
+        ['Flexural rigidity EI', inp.EI, 'Nm^2'],
+        ['Damping ratio', inp.xi, '%'],
+        ['Modes kept', mdl.f.length, '-'],
+        ['Max frequency fmax', inp.fmax, 'Hz'],
+        ['Element size dL', inp.dL, 'm'],
+        ['Load model', envData ? 'Envelope: HSLM-A vs A1-E5' : inp.load, '-'],
+        ['Cars', inp.load === 'HSLM-A' ? 'per HSLM-A' : inp.N_car, '-'],
+        ['Speed range', inp.v.length > 1
+            ? inp.v[0] + ' : ' + (inp.v[1] - inp.v[0]) + ' : ' + inp.v[inp.v.length - 1]
+            : String(inp.v[0]), 'km/h'],
+        ['Load width W', inp.W, 'm'],
+        ['Section forces', H.sec.checked ? 'yes' : 'no', '-'],
+        ['Natural frequencies', Array.from(mdl.f, x => x.toFixed(3)).join(', '), 'Hz']
+    ];
+}
+
+async function onSave() {
+    try {
+        const sheets = [{ name: 'Input', rows: inputRows() }];
+
+        // mode shapes.  mdl.f is a Float64Array, so .map() would return another
+        // Float64Array and turn the labels and the shape arrays into NaN -
+        // Array.from is what is wanted here.
+        const Ltot = mdl.L.reduce((a, b) => a + b, 0);
+        const nx = Math.round(Ltot / mdl.model.dL) + 1;
+        const x = Float64Array.from({ length: nx }, (_, i) => i * mdl.model.dL);
+        const nm = mdl.f.length;
+        const ms = [['Natural frequencies (Hz):', ...Array.from(mdl.f, v => Math.round(v * 1e4) / 1e4)], []];
+        ms.push(['x (m)', ...Array.from({ length: nm }, (_, n) => 'mode ' + (n + 1))]);
+        const shapes = Array.from({ length: nm }, (_, n) => BD.modeShape(mdl.model, n, x));
+        for (let i = 0; i < nx; i++) ms.push([x[i], ...shapes.map(s => s[i])]);
+        sheets.push({ name: 'ModeShapes', rows: ms });
+
+        // results, one column block per quantity
+        const v = inp.v, sep = H.sepA.checked;
+        const cols = [], hdr = ['v (km/h)'];
+        const push = (rows, name, sc) => {
+            if (!rows || !rows.length) return;
+            if (sep && rows.length > 1) rows.forEach((r, t) => { hdr.push(name + ' ' + (t + 1)); cols.push(Array.from(r, y => y * sc)); });
+            else { const y = maxrow(rows); hdr.push(name); cols.push(Array.from(y, q => q * sc)); }
+        };
+        if (envData) {
+            const E = envData;
+            const one = (y, name, sc) => { if (y) { hdr.push(name); cols.push(Array.from(y, q => q * sc)); } };
+            one(E.ha, 'a_max HSLM-A', 1); one(E.oa, 'a_max A1-E5', 1);
+            one(E.hd, 'd_max HSLM-A (mm)', 1e3); one(E.od, 'd_max A1-E5 (mm)', 1e3);
+            one(E.hM, 'M_max HSLM-A (kNm)', 1e-3); one(E.oM, 'M_max A1-E5 (kNm)', 1e-3);
+            one(E.hMn, 'M_min HSLM-A (kNm)', 1e-3); one(E.oMn, 'M_min A1-E5 (kNm)', 1e-3);
+            one(E.hV, 'V_max HSLM-A (kN)', 1e-3); one(E.oV, 'V_max A1-E5 (kN)', 1e-3);
+            for (const c of E.cat) { one(c.a, 'a_max ' + c.name, 1); one(c.d, 'd_max ' + c.name + ' (mm)', 1e3); }
+        } else {
+            for (const r of runs) {
+                push(r.a, 'a_max ' + r.load, 1);
+                push(r.d, 'd_max ' + r.load + ' (mm)', 1e3);
+                push(r.M, 'M_max ' + r.load + ' (kNm)', 1e-3);
+                push(r.Mn, 'M_min ' + r.load + ' (kNm)', 1e-3);
+                push(r.V, 'V_max ' + r.load + ' (kN)', 1e-3);
+                push(r.pd, "phi' d_max " + r.load, 1);
+                push(r.pM, "phi' M_max " + r.load, 1);
+                push(r.pMn, "phi' M_min " + r.load, 1);
+                push(r.pV, "phi' V_max " + r.load, 1);
+            }
+        }
+        const res = [hdr];
+        for (let i = 0; i < v.length; i++) res.push([v[i], ...cols.map(c => c[i])]);
+        res.push([]); res.push([]);
+        for (const r of peakRows()) res.push(r);
+        sheets.push({ name: 'Results', rows: res });
+
+        const name = await XLSX.save(sheets, defaultName() + '.xlsx');
+        setMsg(name ? 'saved ' + name : 'save cancelled', '#006400');
+    } catch (e) {
+        setMsg('save failed: ' + e.message);
+    }
+}
+
+// The report is an A4 print stylesheet rather than a pdf writer: the browser's
+// "Save as PDF" produces the file, with real text and the plots as images.
+function onReport() {
+    const R = document.getElementById('report');
+    // ^2 becomes a real superscript in the report; the workbook keeps the ascii
+    const sup = s => String(s).replace(/\^(-?\d+)/g, '<sup>$1</sup>');
+    const tbl = (rows, head) => {
+        let s = '<table>';
+        rows.forEach((r, i) => {
+            const tag = (head && i === 0) ? 'th' : 'td';
+            s += '<tr>' + r.map(c => '<' + tag + '>' +
+                (c === undefined || c === null ? '' : sup(c)) + '</' + tag + '>').join('') + '</tr>';
+        });
+        return s + '</table>';
+    };
+    // EI reads better in GNm^2 than as a raw 3e10
+    const two = inputRows().slice(1).map(r => {
+        let [name, val, unit] = r;
+        if (name === 'Flexural rigidity EI') {
+            val = Number((inp.EI / 1e9).toPrecision(6));
+            unit = 'GNm^2';
+        }
+        return [name + (unit && unit !== '-' ? ' (' + unit + ')' : ''), val];
+    });
+
+    const catRows = peakRows('cat'), hslmRows = peakRows('hslm');
+    let res = '';
+    if (catRows.length > 1)
+        res += '<h2>Results \u2013 line categories A1 to E5</h2>' + tbl(catRows, true);
+    if (hslmRows.length > 1)
+        res += '<h2>Results \u2013 HSLM-A1 to A10</h2>' + tbl(hslmRows, true);
+    if (!res) res = '<h2>Results</h2>' + tbl(peakRows(), true);
+
+    R.innerHTML =
+        '<h1>Railway bridge dynamics</h1>' +
+        '<div class="date">' + new Date().toISOString().slice(0, 16).replace('T', ' ') + '</div>' +
+        '<h2>Input</h2>' +
+        '<div class="cols"><div>' + tbl(two.slice(0, 7)) + '</div><div>' + tbl(two.slice(7)) + '</div></div>' +
+        res +
+        '<h2>Model</h2>' +
+        '<img src="' + H.axBeam.cv.toDataURL('image/png') + '">' +
+        '<img src="' + H.axM.snapshot(3) + '">' +
+        '<h2>Response</h2>' +
+        '<img src="' + H.axA.snapshot(3) + '">' +
+        '<img src="' + H.axB.snapshot(3) + '">' +
+        (envData ? '<div class="pg"><h2>Detailed results \u2013 A1-E5 trains</h2>' +
+                   tbl(detailRows(), true) + '</div>' : '');
+    setMsg('use the browser print dialog to save as pdf', '#006400');
+    setTimeout(() => window.print(), 60);
+}
+
+function detailRows() {
+    const v = inp.v;
+    const rows = [['train', 'd_max (mm)', 'v', 'a_max (m/s^2)', 'v', 'M_max (kNm)', 'v', 'M_min (kNm)', 'v', 'V_max (kN)', 'v']];
+    const spec = [['d', 1e3, false], ['a', 1, false], ['M', 1e-3, false], ['Mn', 1e-3, true], ['V', 1e-3, false]];
+    for (const c of envData.cat) {
+        const row = [c.name];
+        for (const [k, sc, useMin] of spec) {
+            const y = c[k];
+            if (!y) { row.push('-', '-'); continue; }
+            let bi = 0;
+            for (let i = 1; i < y.length; i++) if (useMin ? y[i] < y[bi] : y[i] > y[bi]) bi = i;
+            row.push((y[bi] * sc).toPrecision(4), v[bi]);
+        }
+        rows.push(row);
+    }
+    return rows;
+}
+
+// Support fixity from the console, the same thing the click menu does:
+//   setSupport(0, true)   clamp the left-hand support
+window.setSupport = function (i, clamped) {
+    if (i < 0 || i >= sup.length) throw new Error('support index out of range');
+    sup[i] = !!clamped;
+    return updateModel();
+};
+
+// ================================================================== start ==
+buildGUI();
+updateModel();
+setMsg('');
+</script>
+
+<div style="text-align: center; padding: 6px 0 14px; font-size: 10px; color: #666;">
+  <footer>Last updated 2026-07-31 </footer>
+</div>
+
+
+</body>
+</html>
