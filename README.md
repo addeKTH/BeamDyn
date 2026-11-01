@@ -1,129 +1,64 @@
 # Railway bridge dynamics — web version
 
-A browser port of `Main_gui.m` and the solvers behind it. Multi-span 2D
-Bernoulli-Euler beams, modal dynamics, Nigam-Jennings time integration, HSLM-A
-and the EN 15528 line categories. No build step, no dependencies, no server-side
-anything — static files you can drop straight into a GitHub Pages repository.
+Browser version of `Main_gui.m` and `BeamDyn2D.m` (MATLAB version of 2026-11-01): multi-span 2D
+Bernoulli-Euler beam, modal dynamics with the exact Nigam-Jennings recurrence, mode-acceleration
+correction, HSLM-A (EN 1991-2:2024) and the EN 15528 line categories A1-E5, dynamic factor φ′ and
+φ″ (EN 1991-2:2024 Annex C). Static files, no build step, no libraries.
 
-## Running it
+## Running
 
-The page uses Web Workers, and browsers refuse to create those from `file://`.
-Serve the folder:
+Serve the folder over http (Web Workers do not start from `file://`), e.g.
 
 ```
-python -m http.server 8000      # then open http://localhost:8000
+python -m http.server 8000
 ```
 
-or push it to GitHub Pages. `Save` uses the File System Access API for a proper
-Save-as dialog in Chrome and Edge, and falls back to a plain download elsewhere.
-Opening `index.html` directly still works — it
-detects the missing workers and runs everything on the main thread instead, so
-it is correct but serial and the interface freezes during a run. The `par`
-button reads `no par` in that case.
+and open http://localhost:8000, or publish the folder on GitHub Pages. Opened from `file://` the page
+falls back to a serial run in the page itself (slower, Stop still works).
 
-## The interface
+## Interface
 
-Same layout as the MATLAB figure, 540 × 680 px, same workflow.
+Same layout and workflow as the MATLAB figure (560 × 908 px):
 
-| Control | Behaviour |
-|---|---|
-| `L, m, EI, ζ` | bridge properties; `L` takes a list, e.g. `24 30 24` |
-| `Nmod, fmax, dL` | modes kept, frequency cut-off, element size |
-| `load` | HSLM-A (all ten Universal Trains) or a line category A1…E5 |
-| `cars` | wagons in the train set; disabled for HSLM-A, which defines its own |
-| `v` | speeds in km/h; MATLAB range syntax works, `100:1:200` |
-| `W` | width of the triangular load distribution; 0 = point loads |
-| `par` | one worker or every core — this is what replaces `parpool` |
-| `Run` | dynamic + static analysis of the selected model |
-| `Save` | xlsx workbook: Input, ModeShapes, Results — opens a Save-as dialog |
-| `Clear` / `Reset` | drop the accumulated runs / restore the defaults |
-| `Report` | builds an A4 report and opens the print dialog — "Save as PDF" |
-| Section-forces | compute M, V, reactions and φ′; off is roughly twice as fast |
-| Cumulative | running peak over speed |
-| Envelope | on Run: HSLM-A against all twelve categories |
-| Separate A1-A10 | draw the ten HSLM-A trains individually instead of their envelope |
+- Symbol bar: Run (Stop after 5 s), Reset, Open and Save of the input (JSON, same fields as MATLAB),
+  Export (xlsx), Print (report), progress bar, status text.
+- Input: spans, mass, EI; damping from EN 1991-2 Table 8.6 (menu, L = L_Φ) or typed; N_mod and f_max
+  automatic per EN 1990:2023 A.2.9.4.2.1(3) (grey) or typed; dL; train (HSLM-A, A1-E5, All); cars;
+  speeds (`100:1:200`); load distribution b_Q (1-, 3-, 5-point or a typed triangle base, default
+  triangular 3.0 m).
+- Model: beam, supports (click to clamp), mode shapes four at a time, legend on the right.
+- Results: a_max, d_max or φ_max, M_max or M_min, V_max; φ′ and φ″ tick boxes, A1-A10 separately,
+  Cumulative, Clear, Print of the four plots. Click a curve for a datatip (drag along it,
+  double-click to remove).
 
-Click a support in the beam sketch to switch it between pinned and clamped; the
-model, frequencies and mode shapes update immediately. Click a result curve for
-a datatip, drag it along the curve, double-click to remove it.
-
-The results object is on `window.out`, and `window.inp` / `window.mdl` hold the
-input and the model — the equivalent of the `assignin('base', ...)` calls in the
-m-file. `setSupport(i, true)` clamps support `i` from the console.
+`window.inp`, `window.mdl` and `window.out` hold the input, model and results (console).
 
 ## Files
 
-| File | MATLAB counterpart |
+| File | Content |
 |---|---|
-| `index.html` | `Main_gui.m` — layout, callbacks, plotting, export |
-| `beamdyn2d.js` | `BeamDyn2D.m` |
-| `beamstat2d.js` | `BeamStat2D.m` |
-| `dynamicfactor.js` | `DynamicFactor.m` |
-| `trainloads.js` | `TrainLoadHSR.m` (HSLMA) + the EN 15528 branch of `TrainLoadSOU.m` |
-| `beammodel.js` | the model block both solvers share — assembly, b.c., recovery |
-| `linalg.js` | banded Cholesky, subspace iteration, the `filter` recurrence |
-| `plot.js` | `PlotBeam2D.m` plus the axes work MATLAB does for free |
-| `solver.worker.js` | the `parfor` body |
-| `xlsx.js` | `writecell` / `writematrix` |
+| `index.html` | layout and styles |
+| `app.js` | GUI logic (port of `Main_gui.m`): input, model update, runs, plots, envelope, φ″, Open/Save, Export, Print |
+| `beamdyn2d.js` | solver (port of `BeamDyn2D.m`): model, eigenvalues, trains, load distribution, static part with exact element-end forces, speed loop, φ′, Eurocode helpers |
+| `linalg.js` | band storage, banded Cholesky, dense symmetric eigensolver (tred2/tql2), IIR filter |
+| `plot.js` | SVG plots (ticks, legend, datatips) and the LaTeX subset for labels |
+| `solver.worker.js` | one train (or a group of speeds) per worker job |
+| `xlsx.js` | minimal xlsx writer (from the earlier web version) |
 
-## What changed, and why
+## Differences to MATLAB
 
-**Banded everything.** K and M have half bandwidth 3, so the factorisation is
-O(n·bw²) and each solve O(n·bw). The eigenvalue problem uses subspace iteration
-against that factorisation and returns only the modes asked for, instead of a
-dense `eig` that computes the whole spectrum. `updateModel` stays interactive
-down to dL = 0.05 m.
-
-**Peaks without the response.** Only extremes leave the solver, so the recovery
-`Psi*q` is fused with the max/min reduction — the [output points × time steps]
-array is never formed. That is the difference between a few hundred kB and a few
-hundred MB in envelope mode, and it made the inner loop about 2.6× faster.
-
-**The shear is evaluated once per element**, not at both ends: `w'''` is constant
-inside an element, so the two end values were the same number.
-
-**ds and the record length come from the full speed list**, not from the subset a
-worker happens to get. Splitting a run over eight workers therefore gives
-bit-identical results to a serial one — there is a test for it.
-
-Rough timings on a modern 8-core laptop, 2 × 20 m, dL = 1, v = 100:1:200, section
-forces on: one line category ≈ 0.8 s serial; HSLM-A (ten trains) ≈ 10 s serial and
-under 2 s across the workers; a full envelope ≈ 25 s serial, 4-5 s parallel.
+- Export writes xlsx only (no .mat) and without native Excel charts.
+- Print and the plot print open the browser print dialog (choose "Save as PDF"); the report is HTML
+  with vector SVG figures in the layout of the LaTeX report. Date and page number "N (M)" use CSS page
+  margin boxes (Chrome/Edge 131 or newer).
+- Eigenvalues: dense up to 600 free dofs (whole spectrum, as `eig`); above that subspace iteration
+  for the modes below f_max (Sturm count) instead of `eigs`.
+- Mode-shape signs may differ from MATLAB; results do not depend on them.
 
 ## Validation
 
-`node test.js` (no dependencies) checks the engine against the MATLAB reference
-case L = 25 m pinned, m = 15e3, EI = 30e9, ζ = 1 %, dL = 1.25, D2 with 6 wagons,
-Nmod = 3:
-
-- natural frequencies 3.554308 / 14.217321 / 31.989846 Hz — match to the printed
-  precision of the reference, and mode 1 matches the closed form for a simply
-  supported beam
-- static `dmax` = 1.123341e-2 m and `Mmax` = 5.077227e6 Nm — match
-- `fs` = 640 Hz and `t_fr` = 0.06 s — match
-- HSLM-A comes out 375.5 to 398.5 m long and 7140 to 9600 kN, exactly the range
-  EN 1991-2 states for the ten Universal Trains
-- a train at 10 km/h gives φ′ ≈ 0.014 against the static solver, where EN 1991-2
-  Annex C gives 0.016 at that K — the two solvers agree independently
-- the static correction shifts `dmax` by 0.03 %, as the m-file documents
-
-`node test_gui.js` and `node test_gui2.js` load `index.html` in jsdom
-(`npm i jsdom` first) and drive the actual interface: input parsing, the model
-update, a full Run, envelope mode, clamping a support, the load distribution, the
-report markup, and the xlsx file, which is unzipped and checked.
-
-## Known gaps against the MATLAB version
-
-- **No `.mat` file.** `Save` writes the xlsx; `window.out` covers the rest.
-- **No native Excel charts.** The MATLAB version drove Excel through COM to build
-  scatter charts inside the workbook, which a browser cannot do. The data and the
-  peak summary are all there, ready to chart in two clicks.
-- **The report is a print stylesheet**, not a vector PDF writer: the tables are
-  real text, the four plots are 3× PNGs. Print to PDF from the browser. It
-  carries two peak tables, one over the line categories and one over the ten
-  HSLM-A trains, and quotes EI in GNm².
-- Mode shape signs may be flipped relative to MATLAB — `eig` fixes no sign
-  either, and nothing downstream depends on it.
-- The influence-line stage of `beamstat2d.js` is O(nNode²) in memory, like the
-  MATLAB `conv2` version. It is fine to dL ≈ 0.1 m on a 40 m bridge and slow
-  below that; the dynamic path has no such limit.
+`../../test/compare_web.html` (served from `BeamDyn/`) runs four cases against
+`../../test/run_web_cases.m` (BeamDyn2D.m): frequencies and all dynamic and static peaks agree within
+1e-8 relative, φ′ within 1e-7 (HSLM-A, clamped supports, 3-/5-point and triangular load distribution, a
+722-dof model on the subspace path). Exception: φ′ of M_min on a single simply supported span, where the
+static M_min is round-off zero on both sides.
