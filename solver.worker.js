@@ -1,52 +1,25 @@
 /* solver.worker.js ----------------------------------------------------------
-   One solver job at a time.  This is what replaces parfor: the GUI splits the
-   run into jobs - one per train, or a block of speeds when there is only one
-   train - and hands them to a pool of these workers.
+   One train (or a group of speeds of one train) per job; replaces the
+   parfeval tasks of BeamDyn2D.m.  The model for the dynamics is built once
+   per worker and kept while the input is unchanged.
 
-   The bridge model does not change within a run, so it is built once per
-   worker and cached; only the train and the speed list vary.  ds and the
-   record length are always taken from the FULL speed list (vAll), so a run
-   split over eight workers gives exactly the same numbers as a serial one.
+   job: {id, key, spec (BD.dynModel input), train {x, P}, iv (speed indices)}
+   reply: {id, ok, T (peaks at iv, static peaks)} or {id, ok: false, message}
+
+   Andreas Andersson, 2026-11-01 (assisted by Claude)
 ---------------------------------------------------------------------------*/
-importScripts('linalg.js', 'beammodel.js', 'trainloads.js',
-              'beamdyn2d.js', 'beamstat2d.js', 'dynamicfactor.js');
+importScripts('linalg.js?v=2026-11-01', 'beamdyn2d.js?v=2026-11-01');
 
-let cacheKey = null, model = null, IL = null;
-
-function modelKey(inp) {
-    return JSON.stringify([inp.L, inp.m, inp.EI, inp.dL, inp.bc, inp.Nmod,
-                           inp.fmax, inp.fs, inp.t_fr, inp.xi, inp.W, inp.secForces]);
-}
-
-function ensureModel(inp) {
-    const key = modelKey(inp);
-    if (key !== cacheKey) { cacheKey = key; model = null; IL = null; }
-    if (!model) model = BD.buildModel(inp);
-    return model;
-}
+let key = null, P = null;
 
 self.onmessage = function (ev) {
     const job = ev.data;
     try {
-        const inp = job.inp;
-        inp.L = Array.from(inp.L);
-        if (job.kind === 'dyn') {
-            const m = ensureModel(inp);
-            const train = { x: Float64Array.from(job.train.x), P: Float64Array.from(job.train.P) };
-            const r = BD.runTrain(m, inp, train, job.vList, job.vAll);
-            const out = { id: job.id, kind: 'dyn', ok: true, res: r, f: m.f };
-            const buf = [];
-            for (const k in r) if (r[k] && r[k].buffer) buf.push(r[k].buffer);
-            self.postMessage(out, buf);
-        } else if (job.kind === 'stat') {
-            ensureModel(inp);
-            if (!IL) IL = BS.influence(inp);
-            const res = [];
-            for (const t of job.trains) {
-                res.push(BS.runTrain(IL, inp, { x: Float64Array.from(t.x), P: Float64Array.from(t.P) }));
-            }
-            self.postMessage({ id: job.id, kind: 'stat', ok: true, res: res });
-        }
+        if (job.key !== key || !P) { P = BD.dynModel(job.spec); key = job.key; }
+        const T = BD.speedPeaks(BD.trainPrep(job.train, P), P, job.iv);
+        const buf = [];
+        for (const k of BD.FIELDS) if (T[k]) buf.push(T[k].buffer);
+        self.postMessage({ id: job.id, ok: true, T }, buf);
     } catch (e) {
         self.postMessage({ id: job.id, ok: false, message: e && e.message ? e.message : String(e) });
     }
