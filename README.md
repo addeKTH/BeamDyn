@@ -1,6 +1,6 @@
 # Railway bridge dynamics — web version
 
-Browser version of `Main_gui.m` and `BeamDyn2D.m` (MATLAB version of 2026-11-01): multi-span 2D
+Browser version of `Main_gui.m` and `BeamDyn2D.m` (MATLAB version of 2026-11-02): multi-span 2D
 Bernoulli-Euler beam, modal dynamics with the exact Nigam-Jennings recurrence, mode-acceleration
 correction, HSLM-A (EN 1991-2:2024) and the EN 15528 line categories A1-E5, dynamic factor φ′ and
 φ″ (EN 1991-2:2024 Annex C). Static files, no build step, no libraries.
@@ -24,12 +24,12 @@ Same layout and workflow as the MATLAB figure (560 × 908 px):
   Export (xlsx), Print (report), progress bar, status text.
 - Input: spans, mass, EI; damping from EN 1991-2 Table 8.6 (menu, L = L_Φ) or typed; N_mod and f_max
   automatic per EN 1990:2023 A.2.9.4.2.1(3) (grey) or typed; dL; train (HSLM-A, A1-E5, All); cars;
-  speeds (`100:1:200`); load distribution b_Q (1-, 3-, 5-point or a typed triangle base, default
-  triangular 3.0 m).
+  speeds (`100:2:300`); load distribution b_Q (1-, 3-, 5-point or a typed triangle base, default
+  1-point).
 - Model: beam, supports (click to clamp), mode shapes four at a time, legend on the right.
-- Results: a_max, d_max or φ_max, M_max or M_min, V_max; φ′ and φ″ tick boxes, A1-A10 separately,
-  Cumulative, Clear, Print of the four plots. Click a curve for a datatip (drag along it,
-  double-click to remove).
+- Results: a_max, d_max or φ_max, M_max or M_min, V_max, with the peak in the legend; φ′ and φ″ tick
+  boxes (φ″ on by default), A1-A10 separately, Cumulative, Clear, Print of the four plots. Click a curve
+  for a datatip (drag along it, click it again to remove).
 
 `window.inp`, `window.mdl` and `window.out` hold the input, model and results (console).
 

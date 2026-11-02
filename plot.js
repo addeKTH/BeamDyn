@@ -1,6 +1,6 @@
 /* plot.js -------------------------------------------------------------------
    SVG plotting for the BeamDyn page: line plots in a box with inward ticks,
-   a legend at the 'best' place, draggable datatips, and a small LaTeX subset
+   a legend in the upper left corner, draggable datatips, and a small LaTeX subset
    for labels ($a_\mathrm{max}$ (m/s$^2$), $\varphi'$, ...) rendered as SVG
    tspans or HTML.  Vector output, so the printed report stays vector.
 
@@ -222,83 +222,87 @@ PL.Axes = class {
         this.tips.forEach(t => this.drawTip(t));
     }
 
-    // legend inside the box at the corner with the fewest data points
+    // legend in the upper left corner, no background; colors[i] null: text only
+    // (no line sample at all when every entry is text only)
     drawLegend() {
         const L = this.legend, sz = L.size || this.opt.size * 0.9, b = this.box;
-        const names = L.names, nc = L.cols || 1, lw = 18, pad = 4;
-        const rowH = sz * 1.15;
-        const colW = [];
-        names.forEach((n, i) => { const c = i % nc; colW[c] = Math.max(colW[c] || 0, PL.textWidth(n, sz) + lw + 6); });
-        const W = colW.reduce((a, c) => a + c, 0) + 2 * pad, H = Math.ceil(names.length / nc) * rowH + 2 * pad;
-        const m = 4, cand = [[b.x + b.w - W - m, b.y + m], [b.x + m, b.y + m], [b.x + m, b.y + b.h - H - m],
-                             [b.x + b.w - W - m, b.y + b.h - H - m], [b.x + (b.w - W) / 2, b.y + m], [b.x + (b.w - W) / 2, b.y + b.h - H - m]];
-        let best = cand[0], bestN = Infinity;
-        for (const [cx, cy] of cand) {
-            let n = 0;
-            for (const s of this.series) for (let i = 0; i < s.x.length; i++) {
-                const px = this.X(s.x[i]), py = this.Y(s.y[i]);
-                if (px >= cx && px <= cx + W && py >= cy && py <= cy + H) n++;
-            }
-            if (n < bestN) { bestN = n; best = [cx, cy]; }
-        }
-        const g = PL.el('g', {}, this.g);
-        PL.el('rect', { x: best[0], y: best[1], width: W, height: H, fill: '#fff', stroke: L.box ? '#000' : 'none', 'stroke-width': 0.5 }, g);
-        names.forEach((n, i) => {
-            const c = i % nc, r = Math.floor(i / nc);
-            let x0 = best[0] + pad; for (let k = 0; k < c; k++) x0 += colW[k];
-            const y0 = best[1] + pad + (r + 0.5) * rowH;
-            PL.el('line', { x1: x0, y1: y0, x2: x0 + lw, y2: y0, stroke: L.colors[i], 'stroke-width': 1 }, g);
-            PL.text(g, n, x0 + lw + 4, y0, { size: sz });
+        const lw = L.colors.some(Boolean) ? 18 : 0, rowH = sz * 1.15;
+        const g = PL.el('g', { style: 'pointer-events:none' }, this.g);
+        L.names.forEach((n, i) => {
+            const x0 = b.x + 6, y0 = b.y + 5 + (i + 0.5) * rowH;
+            if (L.colors[i]) PL.el('line', { x1: x0, y1: y0, x2: x0 + lw, y2: y0, stroke: L.colors[i], 'stroke-width': 1 }, g);
+            PL.text(g, n, x0 + (lw ? lw + 4 : 0), y0, { size: sz });
         });
     }
 
-    // ---- datatips: press on a curve (and drag along it); press on a tip and
-    // drag to move it, double-click to remove; shift adds another tip
+    // ---- datatips: press on a curve (and drag along it); press on a tip or
+    // close to its point and drag to move it, without dragging to remove it;
+    // shift adds another tip
     pick(ev, k) {
         ev.preventDefault(); ev.stopPropagation();
-        const near = !ev.shiftKey && this.tips.find(t => Math.abs(this.X(t.s.x[t.i]) - this.mouseX(ev)) < 0.02 * this.box.w && t.s === this.series[k]);
-        const tip = near || { s: this.series[k], i: 0 };
-        if (!near) this.tips.push(tip);
+        const s = this.series[k], b = this.box;
+        if (!ev.shiftKey) {
+            const xm = this.mouseX(ev), ym = this.mouseY(ev);
+            const dist = t => Math.hypot((this.X(t.s.x[t.i]) - xm) / b.w, 0.27 * (this.Y(t.s.y[t.i]) - ym) / b.h);
+            const near = this.tips.reduce((a, t) => (!a || dist(t) < dist(a) ? t : a), null);
+            if (near && dist(near) < 0.02) { this.grabTip(near, s, ev); return; }   // of the plot width (the height scaled to it)
+        }
+        if (ev.detail > 1) return;                  // the second click of a double-click
+        const tip = { s, i: 0 };
+        this.tips.push(tip);
         this.dragTip(tip, ev);
     }
-    mouseX(ev) {
+    mouseX(ev) { return this.mousePt(ev).x; }
+    mouseY(ev) { return this.mousePt(ev).y; }
+    mousePt(ev) {
         const svg = this.g.ownerSVGElement, p = svg.createSVGPoint();
         p.x = ev.clientX; p.y = ev.clientY;
-        return p.matrixTransform(svg.getScreenCTM().inverse()).x;
+        return p.matrixTransform(svg.getScreenCTM().inverse());
     }
-    dragTip(tip, ev) {
-        const move = e => {
-            const xm = this.mouseX(e);
-            let bi = 0, bd = Infinity;
-            tip.s.x.forEach((xv, i) => { const d = Math.abs(this.X(xv) - xm); if (d < bd && isFinite(tip.s.y[i])) { bd = d; bi = i; } });
-            tip.i = bi;
-            this.redrawTips();
-        };
+    nearest(s, xm) {                                // snap to the nearest sample
+        let bi = 0, bd = Infinity;
+        s.x.forEach((xv, i) => { const d = Math.abs(this.X(xv) - xm); if (d < bd && isFinite(s.y[i])) { bd = d; bi = i; } });
+        return bi;
+    }
+    dragTip(tip, ev) {                              // a new tip, follows the pointer at once
+        const move = e => { tip.i = this.nearest(tip.s, this.mouseX(e)); this.redrawTips(); };
         const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
         window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
         move(ev);
+    }
+    grabTip(tip, src, ev) {                         // an existing tip: dragged along src, or removed
+        const x0 = this.mouseX(ev), dx = this.X(tip.s.x[tip.i]) - x0;
+        let moved = false;
+        const move = e => {
+            const xm = this.mouseX(e);
+            if (!moved && Math.abs(xm - x0) < 3) return;
+            moved = true; tip.s = src; tip.i = this.nearest(src, xm + dx);
+            this.redrawTips();
+        };
+        const up = () => {
+            window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up);
+            if (!moved) { this.tips.splice(this.tips.indexOf(tip), 1); this.redrawTips(); }
+        };
+        window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
     }
     redrawTips() {
         while (this.tipLayer.firstChild) this.tipLayer.removeChild(this.tipLayer.firstChild);
         this.tips.forEach(t => this.drawTip(t));
     }
+    // the box inside the plot: left of the point in the right quarter, below it
+    // at the top, to the other side at the ends; above the curves and the legend
     drawTip(t) {
         const x = t.s.x[t.i], y = t.s.y[t.i], px = this.X(x), py = this.Y(y), b = this.box;
-        const lines = this.onTipText ? this.onTipText(x, y) : [x.toFixed(0), y.toPrecision(3)];
+        const lines = this.onTipText ? this.onTipText(x, y, t.s) : [x.toFixed(0), y.toPrecision(3)];
         const g = PL.el('g', { style: 'cursor:move' }, this.tipLayer);
         PL.el('circle', { cx: px, cy: py, r: 3, fill: '#000' }, g);
-        const fs = 11, w = Math.max(...lines.map(s => { if (!mctx) PL.textWidth('', fs); mctx.font = fs + 'px system-ui, sans-serif'; return mctx.measureText(s).width; })) + 8;
-        const h = lines.length * fs * 1.2 + 6;
-        const right = px > b.x + 0.75 * b.w;
-        let bx = right ? px - 6 - w : px + 6, by = py - h - 4;
+        const fs = 12, w = Math.max(...lines.map(s => PL.textWidth(s, fs))) + 8, h = lines.length * fs * 1.2 + 6;
+        let bx = px > b.x + 0.75 * b.w ? px - 6 - w : px + 6, by = py - h - 4;
         if (by < b.y) by = Math.min(py + 6, b.y + b.h - h);
+        if (bx + w > b.x + b.w) bx = px - 6 - w; else if (bx < b.x) bx = px + 6;
         PL.el('rect', { x: bx, y: by, width: w, height: h, fill: '#fff', stroke: '#b3b3b3', 'stroke-width': 0.7 }, g);
-        lines.forEach((s, i) => {
-            const tt = PL.el('text', { x: bx + 4, y: by + 3 + (i + 0.5) * fs * 1.2, 'font-size': fs, 'font-family': 'system-ui, sans-serif', 'dominant-baseline': 'middle' }, g);
-            tt.textContent = s;
-        });
-        g.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); this.dragTip(t, ev); });
-        g.addEventListener('dblclick', ev => { ev.stopPropagation(); this.tips.splice(this.tips.indexOf(t), 1); this.redrawTips(); });
+        lines.forEach((s, i) => PL.text(g, s, bx + 4, by + 3 + (i + 0.5) * fs * 1.2, { size: fs }));
+        g.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); this.grabTip(t, t.s, ev); });
     }
 };
 

@@ -13,9 +13,9 @@ const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------- default input
 const def = {
-    L: '20 20', m: '15E3', EI: '30E9', xi: '1.5', xiType: 'Concrete',
-    Nmod: '3', fmax: '30', dL: '1', load: 'D2', N_car: '20', v: '100:1:200',
-    bQType: 'Triangular', bQLast: '1-point', b_Q: '3.0'
+    L: '20 20', m: '16000', EI: '35E9', xi: '1.5', xiType: 'Concrete',
+    Nmod: '3', fmax: '30', dL: '1', load: 'HSLM-A', N_car: '20', v: '100:2:300',
+    bQType: '1-point', bQLast: '1-point', b_Q: '3.0'
 };
 const catList = ['A1', 'B1', 'B2', 'C2', 'C3', 'C4', 'D2', 'D3', 'D4', 'D5', 'E4', 'E5'];
 const loadList = ['HSLM-A', ...catList, 'All'];
@@ -405,11 +405,16 @@ const AX = [10, 126, 242, 358].map((y, k) => new PL.Axes(resSvg, { x: 48, y, w: 
 AX[0].ylabel = '$a_\\mathrm{max}$ (m/s$^2$)';
 AX[3].xlabel = '$v$ (km/h)';
 AX.forEach((ax, k) => {
-    ax.onTipText = (x, y) => {
-        if (k === 0) return [`${x.toFixed(0)} km/h`, `${y.toFixed(2)} m/s²`];
-        if (tick('tPhi')) return [`${x.toFixed(0)} km/h`, `phi' = ${y.toFixed(3)}`];
-        const u = (/\(([^)]*)\)\s*$/.exec(ax.ylabel) || ['', ''])[1];
-        return [`${x.toFixed(0)} km/h`, `${Number(y.toPrecision(3))} ${u}`];
+    ax.onTipText = (x, y, s) => {
+        let vs;
+        if (k === 0) vs = `${y.toFixed(1)} m/s$^2$`;
+        else if (tick('tPhi')) vs = `$\\varphi'$ = ${y.toFixed(2)}`;
+        else {                                      // unit from the y-label
+            const u = (/\(([^)]*)\)\s*$/.exec(ax.ylabel) || ['', ''])[1];
+            vs = u === 'MNm' ? `${(y * 1e3).toFixed(0)} kNm` : u === 'MN' ? `${(y * 1e3).toFixed(0)} kN` : `${y.toFixed(1)} ${u}`;   // mm, mrad
+        }
+        // one of A1-A10: the train on the first row
+        return [(s && s.train ? s.train + '@' : '') + `${x.toFixed(0)} km/h`, vs];
     };
 });
 const envMode = () => inp.load === 'All';
@@ -454,19 +459,23 @@ function drawResults(A) {
     let vlim = null;
     if (envMode() && envData) {
         const v = envData.v; vlim = [Math.min(...v), Math.max(...v)];
-        ax3.plot(v, applyCum(envData.ha, v, cumOn), { color: PL.color(0), name: 'HSLM-A' });
-        ax3.plot(v, applyCum(envData.oa, v, cumOn), { color: PL.color(1), name: 'A1-E5' });
-        ax3.legend = { names: ['HSLM-A', 'A1-E5'], colors: [PL.color(0), PL.color(1)] };
+        ax3.plot(v, applyCum(envData.ha, v, cumOn), { color: PL.color(0) });
+        ax3.plot(v, applyCum(envData.oa, v, cumOn), { color: PL.color(1) });
+        ax3.legend = { names: ['HSLM-A: ' + peakText('a', peakOf(envData.ha)), 'A1-E5: ' + peakText('a', peakOf(envData.oa))],
+                       colors: [PL.color(0), PL.color(1)] };
     } else {
         let ci = 0;
         const names = [], cols = [];
         for (const rr of runs) {
             const v = rr.v;
             vlim = vlim ? [Math.min(vlim[0], ...v), Math.max(vlim[1], ...v)] : [Math.min(...v), Math.max(...v)];
-            if (sepOn && rr.a.length > 1) rr.a.forEach((row, t) => { const c = PL.color(ci++); ax3.plot(v, applyCum(row, v, cumOn), { color: c }); names.push(rr.load.replace('HSLM-A', 'HSLM-A') + (t + 1)); cols.push(c); });
-            else { const c = PL.color(ci++); ax3.plot(v, applyCum(maxrow(rr.a), v, cumOn), { color: c }); names.push(rr.load); cols.push(c); }
+            names.push(runText(rr, 'a', peakOf(rr.a)));
+            if (sepOn && rr.a.length > 1) {         // the ten HSLM-A trains; the peak in the legend,
+                rr.a.forEach((row, t) => ax3.plot(v, applyCum(row, v, cumOn), { color: PL.color(ci++), train: 'A' + (t + 1) }));   // the train in the tip
+                cols.push(null);
+            } else { const c = PL.color(ci++); ax3.plot(v, applyCum(maxrow(rr.a), v, cumOn), { color: c }); cols.push(c); }
         }
-        if (runs.length) ax3.legend = { names, colors: cols, cols: names.length > 4 ? 2 : 1, size: names.length > 4 ? 10.7 : undefined };
+        if (runs.length) ax3.legend = { names, colors: cols, size: names.length > 4 ? 10.7 : undefined };
     }
     let ymax = -Infinity;
     for (const s of ax3.series) for (const y of s.y) if (isFinite(y)) ymax = Math.max(ymax, y);
@@ -482,39 +491,67 @@ function drawResults(A) {
 function drawCfg(ax, q, sfMode, sepOn, cumOn) {
     const phiOn = tick('tPhi');
     const qraw = ['d', 'M', 'Mn', 'V', 'r'], qphi = ['pd', 'pM', 'pMn', 'pV', 'pr'];
-    const qlab = ['$d_\\mathrm{max}$', '$M_\\mathrm{max}$', '$M_\\mathrm{min}$', '$V_\\mathrm{max}$', '$\\phi_\\mathrm{max}$'];
     const ylab = ['$d_\\mathrm{max}$ (mm)', '$M$ (MNm)', '$M$ (MNm)', '$V$ (MN)', '$\\phi_\\mathrm{max}$ (mrad)'];
     const sc = [1e3, 1e-6, 1e-6, 1e-6, 1e3];
     const k = phiOn ? 1 : sc[q], fld = phiOn ? qphi[q] : qraw[q];
+    const key = phiOn ? 'p' : qraw[q], useMin = q === 2 && !phiOn;     // legend text
     let yr = [Infinity, -Infinity];
-    const line = (v, y, c, name) => {
+    const names = [], cols = [];
+    const line = (v, y, c, train) => {
         const yy = applyCum(y, v, cumOn).map(x => x * k);
-        ax.plot(v, yy, { color: c, name });
+        ax.plot(v, yy, { color: c, train });
         for (const x of yy) if (isFinite(x)) { yr[0] = Math.min(yr[0], x); yr[1] = Math.max(yr[1], x); }
     };
     if (envMode() && envData) {
-        line(envData.v, envData['h' + fld], PL.color(0), qlab[q] + ' HSLM-A');
-        line(envData.v, envData['o' + fld], PL.color(1), qlab[q] + ' A1-E5');
+        line(envData.v, envData['h' + fld], PL.color(0));
+        line(envData.v, envData['o' + fld], PL.color(1));
+        names.push('HSLM-A: ' + peakText(key, peakOf(envData['h' + fld], useMin)), 'A1-E5: ' + peakText(key, peakOf(envData['o' + fld], useMin)));
+        cols.push(PL.color(0), PL.color(1));
     } else {
         runs.forEach((rr, r) => {
             const X = rr[fld];
             if (!X) return;
-            if (sepOn && X.length > 1) X.forEach((row, t) => line(rr.v, row, PL.color(t), qlab[q] + (t + 1)));
-            else line(rr.v, q === 2 && !phiOn ? minrow(X) : maxrow(X), PL.color(r), qlab[q]);
+            names.push(runText(rr, key, peakOf(X, useMin)));
+            if (sepOn && X.length > 1) {            // the ten HSLM-A trains; the peak in the legend, the train in the tip
+                X.forEach((row, t) => line(rr.v, row, PL.color(t), 'A' + (t + 1)));
+                cols.push(null);
+            } else { line(rr.v, useMin ? minrow(X) : maxrow(X), PL.color(r)); cols.push(PL.color(r)); }
         });
     }
     ax.ylabel = phiOn ? "$\\varphi'$ (-)" : ylab[q];
     setLimFrom(ax, yr, sfMode && !phiOn);
-    if (ax.series.length && !sepOn && !envMode() && runs.length === 1) ax.legend = { names: [qlab[q]], colors: [ax.series[0].color] };
+    if (ax.series.length) ax.legend = { names, colors: cols, size: names.length > 4 ? 10.7 : undefined };
+}
+
+// legend text of a peak: a m/s^2, d m, rotation rad, M Nm, V N, phi' -
+function peakText(key, val) {
+    switch (key) {
+        case 'a':  return `$a_\\mathrm{max}$ = ${val.toFixed(1)} m/s$^2$`;
+        case 'd':  return `$d_\\mathrm{max}$ = ${(val * 1e3).toFixed(1)} mm`;
+        case 'r':  return `$\\phi_\\mathrm{max}$ = ${(val * 1e3).toFixed(1)} mrad`;
+        case 'M':  return `$M_\\mathrm{max}$ = ${(val / 1e3).toFixed(0)} kNm`;
+        case 'Mn': return `$M_\\mathrm{min}$ = ${(val / 1e3).toFixed(0)} kNm`;
+        case 'V':  return `$V_\\mathrm{max}$ = ${(val / 1e3).toFixed(0)} kN`;
+        default:   return `$\\varphi'$ = ${val.toFixed(2)}`;
+    }
+}
+// the same for a run, named when there are several
+function runText(rr, key, val) { return (runs.length === 1 ? '' : rr.load + ': ') + peakText(key, val); }
+// peak of one row or of rows [ntr][nv], finite values only
+function peakOf(X, useMin) {
+    let b = NaN;
+    for (const row of (X[0] && X[0].length !== undefined ? X : [X]))
+        for (const y of row) if (isFinite(y) && !(useMin ? y >= b : y <= b)) b = y;
+    return b;
 }
 
 // ============================================================ phi''
 function ppFactor(v) { return Float64Array.from(v, x => 1 + 0.5 * BD.EN.phiBis(x, mdl.f[0], BD.EN.LPhi(mdl.L))); }
 function pbisLabel() {
-    let s = 'Results';
+    let s = '';
     if (tick('tPbis') && mdl && inp.v)
-        s = `Results, factored by 1 + φ″/2 = ${(1 + 0.5 * BD.EN.phiBis(Math.max(...inp.v), mdl.f[0], BD.EN.LPhi(mdl.L))).toFixed(2)}`;
-    $('rhdr').textContent = s;
+        s = PL.texHTML(`$1 + \\varphi''/2$ = ${(1 + 0.5 * BD.EN.phiBis(Math.max(...inp.v), mdl.f[0], BD.EN.LPhi(mdl.L))).toFixed(2)}`);
+    $('rfac').innerHTML = s;
 }
 // fcn on results including phi'' (EN 1991-2:2024 8.4.6.5(3)-(4)): load
 // effects y_dyn + phi''/2*y_stat, with y_stat = y_dyn/(1 + phi'); the
@@ -567,7 +604,7 @@ const nWorkers = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 
 let pool = null, useWorkers = true;
 function makePool() {
     try {
-        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-02b'));
+        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-02c'));
     } catch (e) { pool = null; useWorkers = false; }
 }
 function killPool() { if (pool) pool.forEach(w => w.terminate()); pool = null; }
@@ -757,7 +794,7 @@ function onReset() {
     setDefaults(); sup = [];
     ui.cumOn = false; setIcon('sCum', 'cum');
     $('tSep').checked = false; $('tD').checked = true; $('tR').checked = false; $('tPhi').checked = false;
-    $('tPbis').checked = false; $('tMx').checked = true; $('tMn').checked = false;
+    $('tPbis').checked = true; $('tMx').checked = true; $('tMn').checked = false;
     onClear();
     updateModel();
 }
