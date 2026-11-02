@@ -567,7 +567,7 @@ const nWorkers = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 
 let pool = null, useWorkers = true;
 function makePool() {
     try {
-        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-01'));
+        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-02'));
     } catch (e) { pool = null; useWorkers = false; }
 }
 function killPool() { if (pool) pool.forEach(w => w.terminate()); pool = null; }

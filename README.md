@@ -62,3 +62,11 @@ Same layout and workflow as the MATLAB figure (560 × 908 px):
 1e-8 relative, φ′ within 1e-7 (HSLM-A, clamped supports, 3-/5-point and triangular load distribution, a
 722-dof model on the subspace path). Exception: φ′ of M_min on a single simply supported span, where the
 static M_min is round-off zero on both sides.
+
+## Disclaimer
+
+This software is provided for research, education and preliminary assessment. It is provided "as is", without warranty of any kind, express or implied, including but not limited to accuracy, completeness, or fitness for a particular purpose.
+
+The results have not been independently certified and do not replace the verification required by the applicable codes, regulations and infrastructure manager requirements. The user is responsible for checking that the method, the load models, the input and the assumptions suit the case at hand, and for verifying the results independently before using them in design, assessment or any other decision. Load models and dynamic factors are implemented as interpreted by the author and may differ from, or become out of date compared with, the current versions of the standards.
+
+The author accepts no liability for any loss, damage or other consequence arising from the use of this software or its results.
