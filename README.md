@@ -28,7 +28,7 @@ Same layout and workflow as the MATLAB figure (560 × 908 px):
   1-point).
 - Model: beam, supports (click to clamp), mode shapes four at a time, legend on the right.
 - Results: a_max, d_max or φ_max, M_max or M_min, V_max, with the peak in the legend; φ′ and φ″ tick
-  boxes (φ″ on by default), A1-A10 separately, Cumulative, Clear, Print of the four plots. Click a curve
+  boxes (φ″ on by default; with φ′ the y-axis has the quantity as index), A1-A10 separately, Cumulative, Clear, Print of the four plots. Click a curve
   for a datatip (drag along it, click it again to remove).
 
 `window.inp`, `window.mdl` and `window.out` hold the input, model and results (console).

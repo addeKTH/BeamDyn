@@ -8,7 +8,7 @@
 
    Andreas Andersson, 2026-11-01 (assisted by Claude)
 ---------------------------------------------------------------------------*/
-importScripts('linalg.js?v=2026-11-02c', 'beamdyn2d.js?v=2026-11-02c');
+importScripts('linalg.js?v=2026-11-02d', 'beamdyn2d.js?v=2026-11-02d');
 
 let key = null, P = null;
 

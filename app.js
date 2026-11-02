@@ -518,7 +518,8 @@ function drawCfg(ax, q, sfMode, sepOn, cumOn) {
             } else { line(rr.v, useMin ? minrow(X) : maxrow(X), PL.color(r)); cols.push(PL.color(r)); }
         });
     }
-    ax.ylabel = phiOn ? "$\\varphi'$ (-)" : ylab[q];
+    const yphi = ['\\mathrm{dmax}', '\\mathrm{Mmax}', '\\mathrm{Mmin}', '\\mathrm{Vmax}', '\\phi\\mathrm{max}'];
+    ax.ylabel = phiOn ? `$\\varphi'_{${yphi[q]}}$ (-)` : ylab[q];
     setLimFrom(ax, yr, sfMode && !phiOn);
     if (ax.series.length) ax.legend = { names, colors: cols, size: names.length > 4 ? 10.7 : undefined };
 }
@@ -604,7 +605,7 @@ const nWorkers = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 
 let pool = null, useWorkers = true;
 function makePool() {
     try {
-        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-02c'));
+        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-02d'));
     } catch (e) { pool = null; useWorkers = false; }
 }
 function killPool() { if (pool) pool.forEach(w => w.terminate()); pool = null; }
