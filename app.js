@@ -1,7 +1,7 @@
 /* app.js --------------------------------------------------------------------
    Railway bridge dynamics, web version of Main_gui.m (2026-11-01): input,
    model and eigenvalue analysis on every change, Run (Web Workers, Stop after
-   5 s), result plots with tick boxes, HSLM-A vs A1-E5 envelope ('All'),
+   1 s), result plots with tick boxes, HSLM-A vs A1-E5 envelope ('All'),
    phi'' (EN 1991-2:2024 Annex C), Open/Save of the input (JSON), Export
    (xlsx), Print (report) and Print of the result plots (browser print to PDF).
 
@@ -78,6 +78,20 @@ function parseVec(str) {
         }
         return out;
     } catch (e) { return null; }
+}
+// The span lengths from the box L.  L1:dL:Ltot is a first span L1, then spans of dL up to the
+// total length Ltot, which comes back in .s rounded down to whole spans (10:10:59 is 10:10:50);
+// otherwise as parseVec.  .v null if they cannot be read; at most 1000 spans.
+function readSpans(str) {
+    const s = String(str).replace(/,/g, '.').trim();
+    if (!s.includes(':')) return { v: parseVec(s), s: null };
+    const p = s.split(':').map(t => { const x = parseVec(t); return x && x.length === 1 ? x[0] : null; });
+    if (s.length > maxIn || p.length !== 3 || p.includes(null)) return { v: null, s: null };
+    const [a, d, T] = p;
+    if (!(a > 0 && d > 0 && T >= a)) return { v: null, s: null };
+    const n = Math.floor((T - a) / d + 1e-9);
+    if (n + 1 > 1000) return { v: null, s: null };
+    return { v: [a, ...new Array(n).fill(d)], s: `${gfmt(a)}:${gfmt(d)}:${gfmt(Number((a + n * d).toFixed(10)))}` };
 }
 const scalar = s => { const v = parseVec(s); return v && v.length === 1 ? v[0] : null; };
 const fmtFreq = f => (Math.round(f * 10) / 10 >= 100 ? f.toFixed(0) : f.toFixed(1));
@@ -183,7 +197,7 @@ $('ixi').addEventListener('change', e => {
 });
 $('bxi').addEventListener('click', ev => {
     ev.stopPropagation();
-    const Lv = parseVec($('iL').value), items = [];
+    const Lv = readSpans($('iL').value).v, items = [];
     xiTypes.slice(0, 3).forEach(t => items.push({
         text: t + (Lv && Lv.every(x => x > 0) ? '   ' + BD.EN.xi(t, BD.EN.LPhi(Lv)).toFixed(2) + ' %' : ''),
         chk: ui.xiType === t, fn: () => { ui.xiType = t; ui.xiLast = t; updateModel(); } }));
@@ -233,7 +247,9 @@ $('tSep').addEventListener('change', () => { if (tick('tSep')) setMsg('separate 
 // ============================================================ input / model
 function readInput() {
     fixComma(['iL', 'im', 'iEI', 'ixi', 'iNmod', 'ifmax', 'idL', 'iNcar', 'iv', 'ibQ']);
-    const L = parseVec($('iL').value), m = scalar($('im').value), EI = scalar($('iEI').value);
+    const LS = readSpans($('iL').value);
+    if (LS.s) $('iL').value = LS.s;                              // L1:dL:Ltot, Ltot on whole spans
+    const L = LS.v, m = scalar($('im').value), EI = scalar($('iEI').value);
     let xi;
     if (ui.xiType === 'Other') { xi = scalar($('ixi').value); $('ixi').classList.remove('auto'); }
     else { xi = L && L.every(x => x > 0) ? BD.EN.xi(ui.xiType, BD.EN.LPhi(L)) : null; $('ixi').classList.add('auto'); }
@@ -631,7 +647,7 @@ const nWorkers = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 
 let pool = null, useWorkers = true;
 function makePool() {
     try {
-        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-09d'));
+        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-09e'));
     } catch (e) { pool = null; useWorkers = false; }
 }
 function killPool() { if (pool) pool.forEach(w => w.terminate()); pool = null; }
@@ -726,8 +742,8 @@ function runStart() {
     setEnable(['sRst', 'sOpen', 'sExp', 'sRep', 'sPrp'], false);
     $('fig').classList.add('busy');
     const t0 = performance.now();
-    stopTimer = setInterval(() => {                 // Run becomes Stop after 5 s
-        if (performance.now() - t0 > 5000 && $('sRun').dataset.state !== 'stop') {
+    stopTimer = setInterval(() => {                 // Run becomes Stop after 1 s
+        if (performance.now() - t0 > 1000 && $('sRun').dataset.state !== 'stop') {
             setIcon('sRun', 'stop'); $('sRun').dataset.state = 'stop';
             $('sRun').dataset.tip = 'Stop: ends the run, keeps the input'; hideTip();
         }
