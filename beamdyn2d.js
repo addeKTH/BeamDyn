@@ -145,53 +145,111 @@ function sturmCount(Kf, Mf, n, sigma) {
 }
 
 // subspace iteration for the p lowest modes (Bathe), dense projected problem
+// The p lowest modes of K x = lam M x above the dense limit (banded, n free dofs): shift-invert
+// Lanczos on K^-1 M in the M inner product, with full re-orthogonalisation, as eigs in BeamDyn2D.m.
+// Beam eigenvalues are simple, so one starting vector finds them all.  Returns ascending lam (p)
+// and X (column major, M-orthonormal).
 function subspace(Kf, Mf, n, p) {
-    const q = Math.min(n, Math.max(2 * p, p + 8));
     const R = LA.bandChol(Kf, n, BW);
-    const mul = (A, x, y) => { for (let i = 0; i < n; i++) y[i] = LA.bandRowDot(A, n, BW, i, x); return y; };
-    let X = new Float64Array(n * q);
-    const ratio = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-        const ki = Kf[i * (BW + 1)], mi = Mf[i * (BW + 1)];
-        ratio[i] = ki ? mi / ki : 0; X[i] = mi;
-    }
-    const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => ratio[b] - ratio[a]);
-    for (let c = 1; c < q - 1; c++) X[c * n + order[c - 1]] = 1;
-    for (let i = 0; i < n; i++) X[(q - 1) * n + i] = (i % 2 ? -1 : 1) * (1 + i / n);
-    const Xb = new Float64Array(n * q), MX = new Float64Array(n * q), tmp = new Float64Array(n);
-    const Kr = new Float64Array(q * q), Mr = new Float64Array(q * q);
-    let lamOld = new Float64Array(q).fill(Infinity), lam = null;
-    for (let it = 0; it < 500; it++) {
-        for (let c = 0; c < q; c++) {
-            mul(Mf, X.subarray(c * n, (c + 1) * n), tmp);
-            LA.bandCholSolve(R, n, BW, tmp, Xb.subarray(c * n, (c + 1) * n));
+    const mMax = Math.min(n, Math.max(4 * p + 60, 80));
+    const V = new Float64Array(n * mMax), MV = new Float64Array(n * mMax);
+    const mul = (x, y) => { for (let i = 0; i < n; i++) y[i] = LA.bandRowDot(Mf, n, BW, i, x); return y; };
+    const dot = (a, b) => { let s = 0; for (let i = 0; i < n; i++) s += a[i] * b[i]; return s; };
+    // a fixed starting vector of pseudo-random numbers, so that a run can be repeated
+    let seed = 12345;
+    const randVec = v => { for (let i = 0; i < n; i++) { seed = (seed * 1103515245 + 12345) % 2147483648; v[i] = seed / 1073741824 - 1; } };
+    let v = new Float64Array(n), mv = new Float64Array(n), w = new Float64Array(n);
+    randVec(v);
+    // K x = b with two steps of iterative refinement: K of a long, finely divided beam is badly
+    // conditioned, and the lowest modes lose accuracy without them
+    const rK = new Float64Array(n), dK = new Float64Array(n);
+    const solveK = (b, x) => {
+        LA.bandCholSolve(R, n, BW, b, x);
+        for (let st = 0; st < 2; st++) {
+            for (let i = 0; i < n; i++) rK[i] = b[i] - LA.bandRowDot(Kf, n, BW, i, x);
+            LA.bandCholSolve(R, n, BW, rK, dK);
+            for (let i = 0; i < n; i++) x[i] += dK[i];
         }
-        for (let c = 0; c < q; c++) { mul(Kf, Xb.subarray(c * n, (c + 1) * n), tmp); MX.set(tmp, c * n); }
-        for (let a = 0; a < q; a++) for (let b = a; b < q; b++) {
-            let s = 0; for (let i = 0; i < n; i++) s += Xb[a * n + i] * MX[b * n + i];
-            Kr[a * q + b] = s; Kr[b * q + a] = s;
-        }
-        for (let c = 0; c < q; c++) { mul(Mf, Xb.subarray(c * n, (c + 1) * n), tmp); MX.set(tmp, c * n); }
-        for (let a = 0; a < q; a++) for (let b = a; b < q; b++) {
-            let s = 0; for (let i = 0; i < n; i++) s += Xb[a * n + i] * MX[b * n + i];
-            Mr[a * q + b] = s; Mr[b * q + a] = s;
-        }
-        const e = LA.genEig(Kr, Mr, q);
-        lam = e.lam;
-        const Xn = new Float64Array(n * q);
-        for (let c = 0; c < q; c++)
-            for (let k = 0; k < q; k++) {
-                const qk = e.Y[k * q + c];
-                if (qk) for (let i = 0; i < n; i++) Xn[c * n + i] += Xb[k * n + i] * qk;
+    };
+    const reorth = (x, m) => {                                  // twice is enough
+        for (let pass = 0; pass < 2; pass++)
+            for (let k = 0; k < m; k++) {
+                const d = dot(x, MV.subarray(k * n, (k + 1) * n)), vk = V.subarray(k * n, (k + 1) * n);
+                for (let i = 0; i < n; i++) x[i] -= d * vk[i];
             }
-        X = Xn;
-        let done = it > 1;
-        for (let c = 0; c < p && done; c++)
-            if (Math.abs(lam[c] - lamOld[c]) > 1e-13 * Math.abs(lam[c])) done = false;
-        lamOld = Float64Array.from(lam);
-        if (done) break;
+    };
+    mul(v, mv);
+    let nr = Math.sqrt(dot(v, mv));
+    for (let i = 0; i < n; i++) { v[i] /= nr; mv[i] /= nr; }
+    const al = new Float64Array(mMax), be = new Float64Array(mMax);
+    let m = 0, res = null;
+    const step = Math.max(5, Math.ceil(p / 4));
+    for (let j = 0; j < mMax; j++) {
+        V.set(v, j * n); MV.set(mv, j * n); m = j + 1;
+        solveK(mv, w);
+        al[j] = dot(w, mv);
+        reorth(w, m);
+        const mw = mul(w, new Float64Array(n));
+        let b = Math.sqrt(Math.max(dot(w, mw), 0));
+        const last = j === mMax - 1, tiny = !(b > 1e-13 * Math.abs(al[j]));
+        be[j] = tiny ? 0 : b;
+        if (m >= p && (last || tiny || m % step === 0)) {       // the Ritz values and their residuals
+            const T = new Float64Array(m * m);
+            for (let a = 0; a < m; a++) {
+                T[a * m + a] = al[a];
+                if (a + 1 < m) { T[a * m + a + 1] = be[a]; T[(a + 1) * m + a] = be[a]; }
+            }
+            const e = LA.symEig(T, m);
+            let done = true;
+            for (let c = 0; c < p && done; c++) {
+                const q = m - 1 - c;                            // largest theta = lowest mode
+                if (Math.abs(b * e.V[(m - 1) * m + q]) > 1e-15 * Math.abs(e.lam[0 + m - 1])) done = false;   // against the largest theta: V is very sensitive to the shapes
+            }
+            res = { e, m };
+            if (done || last) break;
+        }
+        if (tiny) {                                             // an invariant subspace: on with a new vector
+            randVec(w); reorth(w, m); mul(w, mw); b = Math.sqrt(dot(w, mw));
+        }
+        for (let i = 0; i < n; i++) { v[i] = w[i] / b; mv[i] = mw[i] / b; }
     }
-    return { lam: lam.subarray(0, p), X: X.subarray(0, n * p) };
+    let lam = new Float64Array(p), X = new Float64Array(n * p);
+    for (let c = 0; c < p; c++) {
+        const q = res.m - 1 - c;
+        lam[c] = 1 / res.e.lam[q];
+        const xc = X.subarray(c * n, (c + 1) * n);
+        for (let k = 0; k < res.m; k++) {
+            const skq = res.e.V[k * res.m + q], vk = V.subarray(k * n, (k + 1) * n);
+            for (let i = 0; i < n; i++) xc[i] += skq * vk[i];
+        }
+    }
+    // two polishing steps on the shapes: inverse iteration, then Rayleigh-Ritz in these p vectors.
+    // Round-off leaves high-frequency noise in the Ritz vectors, small in the deflection (1e-9) but
+    // large in the shear through 12 EI/dL^3 (17 % of a first mode); K^-1 damps exactly that noise.
+    // X' K X is formed as Xb' M X, without K, whose product would bring the noise back.
+    const Xb = new Float64Array(n * p), MX = new Float64Array(n * p), MXb = new Float64Array(n * p);
+    const Kr = new Float64Array(p * p), Mr = new Float64Array(p * p), yK = new Float64Array(n);
+    for (let st = 0; st < 2; st++) {
+        for (let c = 0; c < p; c++) {
+            mul(X.subarray(c * n, (c + 1) * n), yK); MX.set(yK, c * n);
+            solveK(yK, w); Xb.set(w, c * n);
+            mul(w, yK); MXb.set(yK, c * n);
+        }
+        for (let a = 0; a < p; a++) for (let b = a; b < p; b++) {
+            const xa = Xb.subarray(a * n, (a + 1) * n);
+            const k = dot(xa, MX.subarray(b * n, (b + 1) * n)), m2 = dot(xa, MXb.subarray(b * n, (b + 1) * n));
+            Kr[a * p + b] = k; Kr[b * p + a] = k; Mr[a * p + b] = m2; Mr[b * p + a] = m2;
+        }
+        const g = LA.genEig(Kr, Mr, p);
+        const Xn = new Float64Array(n * p);
+        for (let c = 0; c < p; c++) for (let k = 0; k < p; k++) {
+            const qk = g.Y[k * p + c];
+            const xk = Xb.subarray(k * n, (k + 1) * n), xn = Xn.subarray(c * n, (c + 1) * n);
+            for (let i = 0; i < n; i++) xn[i] += qk * xk[i];
+        }
+        X = Xn; lam = Float64Array.from(g.lam);
+    }
+    return { lam, X };
 }
 
 // Mode shape at arbitrary x (element Hermite polynomials: exact between
@@ -281,11 +339,12 @@ BD.dynModel = function (spec) {
     };
     const v = Float64Array.from(spec.v, x => x / 3.6);
     let vmin = Infinity, vmax = -Infinity;
-    for (const x of v) { vmin = Math.min(vmin, x); vmax = Math.max(vmax, x); }
+    for (const x of v) { if (x > 0) vmin = Math.min(vmin, x); vmax = Math.max(vmax, x); }
     return {
         dL, EL, ndof, sumL, K, fdof, nfr, Rchol, f, Phi, Nmod,
         w2: Float64Array.from(f, x => (2 * Math.PI * x) ** 2),
-        xi: spec.xi * 0.01, fs: spec.fs, t_fr: spec.t_fr, v, vmax, ds: vmin / spec.fs,
+        xi: spec.xi * 0.01, fs: spec.fs, t_fr: spec.t_fr, v, vmax, ds: isFinite(vmin) ? vmin / spec.fs : Math.max(Math.min(dL / 2, 0.05), (sumL + 500) * EL / 2e7),   // v = 0 alone: statics only
+       
         xd, xr, xF, Rd, Rr, RM, RV, pdofF, pdofM,
         Psi_d: recovModal(Rd, Phi, ndof, Nmod), Psi_r: recovModal(Rr, Phi, ndof, Nmod),
         Psi_M: recovModal(RM, Phi, ndof, Nmod), Psi_V: recovModal(RV, Phi, ndof, Nmod),
@@ -436,6 +495,12 @@ BD.speedPeaks = function (Q, P, iv, check) {
     const co = Array.from(f, x => njCoeff(2 * Math.PI * x, xi, dt));
     for (const vi of iv) {
         const v = P.v[vi];
+        if (v === 0) {                                          // static: the peaks over the positions
+            for (const k of ['dmax', 'rmax', 'Mmax', 'Mmin', 'Vmax', 'RFmax', 'RFmin']) T[k][vi] = Q.st[k];
+            if (nsM) T.RMmax[vi] = Q.st.RMmax;
+            if (check && check()) throw new Error('stopped');
+            continue;
+        }
         const Nt = Math.floor(Q.smax * fs / v) + 1;
         const i0 = new Int32Array(Nt), wg = new Float64Array(Nt);
         for (let t = 0; t < Nt; t++) {

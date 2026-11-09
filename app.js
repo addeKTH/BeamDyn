@@ -52,9 +52,16 @@ function evalExpr(s) {
     if (i !== s.length || !isFinite(v)) throw 0;
     return v;
 }
+// the input boxes: at most this many characters; a box with an error is light red; a comma is
+// a decimal point, also in the box
+const maxIn = 200;
+document.querySelectorAll('#fig input:not([type=checkbox])').forEach(e => { e.maxLength = maxIn; });
+function markBad(bad) { for (const id in bad) $(id).classList.toggle('bad', !!bad[id]); }
+function fixComma(ids) { for (const id of ids) if ($(id).value.includes(',')) $(id).value = $(id).value.replace(/,/g, '.'); }
 function parseVec(str) {
+    if (String(str).length > maxIn) return null;
     try {
-        let s = String(str).trim().replace(/^\[|\]$/g, '').replace(/,/g, ' ').trim();
+        let s = String(str).trim().replace(/^\[|\]$/g, '').replace(/,/g, '.').replace(/;/g, ' ').trim();
         if (!s) return null;
         s = s.replace(/\s*:\s*/g, ':').replace(/([*/^+(-])\s+/g, '$1').replace(/\s+([*/^)])/g, '$1');
         const out = [];
@@ -65,6 +72,7 @@ function parseVec(str) {
                 const [a, st, b] = p.length === 2 ? [p[0], 1, p[1]] : p;
                 if (!st) return null;
                 const n = Math.floor((b - a) / st + 1e-10) + 1;
+                if (out.length + n > 1000) return null;              // at most 1000 values
                 for (let k = 0; k < n; k++) out.push(Number((a + k * st).toPrecision(12)));
             }
         }
@@ -224,6 +232,7 @@ $('tSep').addEventListener('change', () => { if (tick('tSep')) setMsg('separate 
 
 // ============================================================ input / model
 function readInput() {
+    fixComma(['iL', 'im', 'iEI', 'ixi', 'iNmod', 'ifmax', 'idL', 'iNcar', 'iv', 'ibQ']);
     const L = parseVec($('iL').value), m = scalar($('im').value), EI = scalar($('iEI').value);
     let xi;
     if (ui.xiType === 'Other') { xi = scalar($('ixi').value); $('ixi').classList.remove('auto'); }
@@ -250,19 +259,35 @@ function readInput() {
         dL: scalar($('idL').value), load: $('iLoad').value, N_car: scalar($('iNcar').value),
         v: parseVec($('iv').value), loadDist: ui.bQType, b_Q
     };
-    const ok = L && L.length && L.every(x => x > 0) && m > 0 && EI > 0 && xi !== null && xi >= 0 && xi < 100 &&
-        r.Nmod >= 1 && r.fmax > 0 && r.dL > 0 && r.v && r.v.length && r.v.every(x => x > 0) &&
-        b_Q !== null && b_Q >= 0 && r.N_car >= 1 && r.N_car % 1 === 0;
-    if (!ok) { setMsg('input error', '#b30000'); return null; }
+    const pv = v => !!v && v.length > 0 && v.every(x => x > 0);
+    const Lsum = pv(L) ? L.reduce((a, c) => a + c, 0) : 0;       // total length 1 to 2000 m, as BeamStat
+    const badL = !pv(L) || Lsum < 1 || Lsum > 2000;
+    const bad = { iL: badL, im: !(m > 0), iEI: !(EI > 0), ixi: ui.xiType === 'Other' && !(xi !== null && xi >= 0 && xi < 100),
+                  iNmod: !(r.Nmod >= 1 && r.Nmod <= 500), ifmax: !(ui.autoF || (r.fmax > 0 && r.fmax <= 1000)),
+                  idL: !(r.dL > 0 && (badL || Math.round(Lsum / r.dL) <= 5000)), iv: !(r.v && r.v.length > 0 && (r.v.every(x => x >= 1) || (r.v.length === 1 && r.v[0] === 0))),   // 0 alone: static; else at least 1 km/h
+                      // at most 5000 elements, as BeamStat
+                  ibQ: !(b_Q !== null && b_Q >= 0), iNcar: !(r.N_car >= 1 && r.N_car <= 100 && r.N_car % 1 === 0) };
+    markBad(bad);
+    const ok = !Object.values(bad).some(Boolean);
+    setEnable(['sSave'], ok);                                    // nothing to save
+    if (!ok) return null;
     $('iNcar').disabled = r.load === 'HSLM-A';
     const hs = r.load === 'HSLM-A' ? '' : 'none';
     $('tSep').style.display = hs; $('lSep').style.display = hs;
     return r;
 }
 
+// an input error: no results, and nothing to export, print or save
+function inputError(s) {
+    onClear();
+    $('model').innerHTML = ''; modelMap = null; $('rfac').innerHTML = '';   // mode shapes, 1 + phi''/2
+    setEnable(['sExp', 'sRep', 'sPrp', 'sSave'], false);
+    setMsg(s, '#b30000');
+}
+
 function updateModel() {
     const r = readInput();
-    if (!r) return false;
+    if (!r) { inputError('input error'); return false; }
     inp = r;
     setMsg('');
     let model, eg;
@@ -289,7 +314,8 @@ function updateModel() {
         inp.t_fr = Math.round(Math.max(2 / fe, 1 / f[0]) * 100) / 100;
         mdl = Object.assign(model, { f, Phi });
     } catch (e) {
-        setMsg('input error: ' + e.message, '#b30000'); return false;
+        markBad({ iL: true, idL: true }); setEnable(['sSave'], false);
+        inputError('input error: ' + e.message); return false;
     }
     setEnable(['sExp', 'sRep', 'sPrp'], false);
     plotBeam(); applyVlim(); pbisLabel();
@@ -380,7 +406,7 @@ function plotBeam() {
 // click near a support: pull-down pinned / clamped
 $('model').addEventListener('click', ev => {
     ev.stopPropagation();
-    if (ui.busy || !mdl) return;
+    if (ui.busy || !mdl || !modelMap) return;
     const r = $('model').getBoundingClientRect(), px = ev.clientX - r.left;
     let bi = -1, bd = Infinity;
     mdl.xs.forEach((x, i) => { const d = Math.abs(modelMap.X(x) - px); if (d < bd) { bd = d; bi = i; } });
@@ -605,7 +631,7 @@ const nWorkers = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 2) - 
 let pool = null, useWorkers = true;
 function makePool() {
     try {
-        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-02d'));
+        pool = Array.from({ length: nWorkers }, () => new Worker('solver.worker.js?v=2026-11-09d'));
     } catch (e) { pool = null; useWorkers = false; }
 }
 function killPool() { if (pool) pool.forEach(w => w.terminate()); pool = null; }
@@ -742,7 +768,7 @@ async function onRun() {
                     pd: phi.dmax, pM: phi.Mmax, pMn: phi.Mmin, pV: phi.Vmax, r: dyn.rmax, pr: phi.rmax,
                     fpp: ppFactor(inp.v), dyn, phi, f: mdl.f });
         redrawResults();
-        setMsg(`done in ${((performance.now() - t0) / 1000).toFixed(1)} sec`);
+        setMsg(`${inp.v.every(x => x === 0) ? 'static analysis, ' : ''}done in ${((performance.now() - t0) / 1000).toFixed(1)} sec`);
         setEnable(['sExp', 'sRep', 'sPrp'], true);
         window.out = { runs, mdl };
     } catch (e) { runFailed(e); }
@@ -778,7 +804,7 @@ async function runEnvelope() {
         E.f = mdl.f;
         envData = E; isEnv = true;
         redrawResults();
-        setMsg(`done in ${((performance.now() - t0) / 1000).toFixed(1)} sec`);
+        setMsg(`${inp.v.every(x => x === 0) ? 'static analysis, ' : ''}done in ${((performance.now() - t0) / 1000).toFixed(1)} sec`);
         setEnable(['sExp', 'sRep', 'sPrp'], true);
         window.out = { envData, mdl };
     } catch (e) { runFailed(e); }
@@ -830,8 +856,10 @@ $('fileIn').addEventListener('change', async ev => {
     const file = ev.target.files[0];
     ev.target.value = '';
     if (!file) return;
+    if (file.size > 1e6) { setMsg('open failed: the file is larger than 1 MB', '#b30000'); return; }
     let S;
     try { S = JSON.parse(await file.text()); } catch (e) { setMsg('open failed', '#b30000'); alert(e.message); return; }
+    if (!S || typeof S !== 'object' || Array.isArray(S)) { setMsg('open failed: no input fields in the file', '#b30000'); return; }
     const str = v => (Array.isArray(v) ? v.join(' ') : String(v));
     const flds = { L: 'iL', m: 'im', EI: 'iEI', xi: 'ixi', Nmod: 'iNmod', fmax: 'ifmax', dL: 'idL', N_car: 'iNcar', v: 'iv' };
     if ('W' in S) { S.bQType = bQTypes[+S.W > 0 ? 3 : 0]; S.b_Q = S.W; }     // older files: W

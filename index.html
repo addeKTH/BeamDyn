@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://addekth.goatcounter.com; connect-src 'self' https://addekth.goatcounter.com; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=600">
 <title>Railway bridge dynamics</title>
 <!--
@@ -25,6 +26,7 @@
   .sym { position: absolute; cursor: pointer; }
   .sym svg { width: 100%; height: 100%; display: block; }
   .sym.off { opacity: 0.3; cursor: default; }
+  input.f.bad { background: #ffd6d6; }
   #pbar { position: absolute; left: 274px; top: 18px; width: 120px; height: 14px; box-sizing: border-box;
           border: 1px solid #999; background: #fff; }
   #pfill { height: 100%; width: 0; background: #21963f; }
@@ -101,7 +103,7 @@
   <div class="lbl txt" style="left:326px; top:112px">Cars</div>
   <input class="f" id="iNcar" style="left:394px; top:112px; width:80px" title="number of cars in train set">
   <div class="lbl" style="left:326px; top:138px"><i>v</i> (km/h)</div>
-  <input class="f" id="iv" style="left:394px; top:138px; width:80px" title="Train speed range">
+  <input class="f" id="iv" style="left:394px; top:138px; width:80px" title="Train speed range, at least 1 km/h; v = 0 alone: static analysis">
   <div class="lbl" style="left:326px; top:164px"><i>b</i><sub>Q</sub> (m)</div>
   <input class="f" id="ibQ" style="left:394px; top:164px; width:62px">
   <div class="mbtn" id="bbQ" style="left:456px; top:164px" title="Load distribution of each axle">&#9660;</div>
@@ -141,12 +143,12 @@
   <div id="tip"></div>
   <input type="file" id="fileIn" accept=".json,application/json">
 </div>
-<div id="foot">Last modified 2026-11-02<div style="max-width:560px; margin:4px auto 0; font-style:italic">For research, education and preliminary assessment. Provided "as is", without warranty. Results must be verified independently by the user, and the author accepts no liability for their use.</div></div>
-<script src="linalg.js?v=2026-11-02d"></script>
-<script src="beamdyn2d.js?v=2026-11-02d"></script>
-<script src="plot.js?v=2026-11-02d"></script>
-<script src="xlsx.js?v=2026-11-02d"></script>
-<script src="app.js?v=2026-11-02d"></script>
-<script data-goatcounter="https://addekth.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+<div id="foot">Last modified 2026-11-09<div style="max-width:560px; margin:4px auto 0; font-style:italic">For research, education and preliminary assessment. Provided "as is", without warranty. Results must be verified independently by the user, and the author accepts no liability for their use.</div></div>
+<script src="linalg.js?v=2026-11-09d"></script>
+<script src="beamdyn2d.js?v=2026-11-09d"></script>
+<script src="plot.js?v=2026-11-09d"></script>
+<script src="xlsx.js?v=2026-11-09d"></script>
+<script src="app.js?v=2026-11-09d"></script>
+<script data-goatcounter="https://addekth.goatcounter.com/count" async src="count.js"></script>
 </body>
 </html>
